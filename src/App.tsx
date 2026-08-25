@@ -3,6 +3,7 @@ import { useState, useEffect, useRef, useCallback } from "react";
 const APPS_SCRIPT_URL =
   https://script.google.com/macros/s/AKfycbzTTMBPvbsZckZgmQz274CBFDD1DYisym4T1Eh_CbvkzV-iDdfvXZzwrT2OSRQo4NPvhw/exec;
 
+const APPS_SCRIPT_URL ="https://script.google.com/macros/s/AKfycbwtjTq25C0pURGGNsPMJ76iAbpzM3R9awJmswQUsQb1NrEG790gZc-_gsvPoXOTcCab/exec";
 
 const QUIZ_SETS = [
   { id:"EQ-BASIC5", name:"สมการ ป.6 เข้า ม.1 สมการ เงิน คน สัตว์", total:10, passingScore:8, timeLimit:30*60 },
