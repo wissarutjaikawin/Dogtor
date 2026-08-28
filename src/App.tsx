@@ -1,9 +1,55 @@
-import { useState, useEffect, useRef, useCallback } from "react";
+import React, { useState, useEffect, useRef, useCallback } from "react";
+import ReactMarkdown from "react-markdown";
+import remarkMath from "remark-math";
+import rehypeKatex from "rehype-katex";
+import "katex/dist/katex.min.css"; // 👈 เพิ่มบรรทัดนี้ลงไป
+
+// ============================================================
+// MARKDOWN RENDERER — ไม่ต้องติดตั้ง library เพิ่ม
+// รองรับ: **bold**, *italic*, `code`, ~~strikethrough~~, \n
+// ============================================================
+// ✅ เปลี่ยนเป็นอันนี้ (แสดงสมการและ Markdown ได้สมบูรณ์)
+const MdText = React.memo(function MdText({
+  children,
+  style = {},
+}: {
+  children?: React.ReactNode;
+  style?: React.CSSProperties;
+}) {
+  if (!children) return null;
+  return (
+    <span style={{ display: "inline-block", ...style }}>
+      <ReactMarkdown
+        remarkPlugins={[remarkMath]}
+        rehypePlugins={[rehypeKatex]}
+        components={{
+          p: ({ node, ...props }) => <span {...props} />,
+        }}
+      >
+        {String(children)}
+      </ReactMarkdown>
+    </span>
+  );
+});
+
+// โจทย์ข้อความ (ใช้ MdText)
+function QuestionText({ text }) {
+  if (!text) return null;
+  return (
+    <p style={{color:"#f5e6c8",fontFamily:"'Sarabun',sans-serif",fontSize:"18px",
+      textAlign:"center",margin:0,lineHeight:1.8}}>
+      <MdText>{text}</MdText>
+    </p>
+  );
+}
+
+// ============================================================
 
 const APPS_SCRIPT_URL =
-  https://script.google.com/macros/s/AKfycbzTTMBPvbsZckZgmQz274CBFDD1DYisym4T1Eh_CbvkzV-iDdfvXZzwrT2OSRQo4NPvhw/exec;
+  "https://script.google.com/macros/s/AKfycbzTTMBPvbsZckZgmQz274CBFDD1DYisym4T1Eh_CbvkzV-iDdfvXZzwrT2OSRQo4NPvhw/exec";
 
-const APPS_SCRIPT_URL ="https://script.google.com/macros/s/AKfycbwtjTq25C0pURGGNsPMJ76iAbpzM3R9awJmswQUsQb1NrEG790gZc-_gsvPoXOTcCab/exec";
+const LOOKER_STUDIO_URL =
+  "https://datastudio.google.com/reporting/658dffb1-a471-427e-8b1a-4f97ffc9a509";
 
 const QUIZ_SETS = [
   { id:"EQ-BASIC5", name:"สมการ ป.6 เข้า ม.1 สมการ เงิน คน สัตว์", total:10, passingScore:8, timeLimit:30*60 },
@@ -29,6 +75,7 @@ const QUIZ_SETS = [
   { id:"SKR-166", name:"Pre Test สวนกุหลาบรังสิต ม.1 2566", total:40, passingScore:32, timeLimit:120*60 },
   { id:"JP-165", name:"Pre Test จุฬาภรณ์ ม.1 2565", total:27, passingScore:36, timeLimit:90*60 },
   { id:"SKR-166-??", name:"Pre Test สวนกุหลาบรังสิต ม.1 2566 สำหรับBB", total:20, passingScore:16, timeLimit:60*60 },
+  { id:"PW8-BASIC1", name:"สมบัติเลขยกกำลัง ม.2 สมบัติ 7+2 ข้อ", total:15, passingScore:12, timeLimit:45*60 },
 ];
 
 const DEFAULT_THEME = {
@@ -36,7 +83,6 @@ const DEFAULT_THEME = {
   bgColor:"#0d0803", bgImageUrl:"",
 };
 
-// ── URL helpers ───────────────────────────────────────────
 function getSetFromUrl() {
   try { return new URLSearchParams(window.location.search).get("set") || null; }
   catch { return null; }
@@ -46,7 +92,6 @@ function getModeFromUrl() {
   catch { return "normal"; }
 }
 
-// ── API ───────────────────────────────────────────────────
 async function apiGet(params) {
   const query = new URLSearchParams(
     Object.entries(params).reduce((acc,[k,v])=>{ acc[k]=String(v); return acc; },{})
@@ -59,7 +104,6 @@ async function apiPost(body) {
   return res.json();
 }
 
-// ── Utils ─────────────────────────────────────────────────
 function shuffle(arr) {
   const a=[...arr];
   for(let i=a.length-1;i>0;i--){const j=Math.floor(Math.random()*(i+1));[a[i],a[j]]=[a[j],a[i]];}
@@ -112,7 +156,6 @@ function pickChallengeQuestion(pool, usedIds) {
   return available[Math.floor(Math.random()*available.length)];
 }
 
-// ── Particles ─────────────────────────────────────────────
 function Particles({ color }) {
   const pts=useRef([...Array(18)].map(()=>({
     w:Math.random()*2.5+0.5,l:Math.random()*100,t:Math.random()*100,
@@ -161,7 +204,6 @@ function PointsBadge({ points, tc }) {
   );
 }
 
-// ── Character Popup ───────────────────────────────────────
 function CharacterPopup({ charData, status, onClose, tc }) {
   const [visible,setVisible]=useState(false);
   const [closing,setClosing]=useState(false);
@@ -214,45 +256,34 @@ function CharacterPopup({ charData, status, onClose, tc }) {
   );
 }
 
-// ── Life Hearts (Challenge) ───────────────────────────────
 function LifeHearts({ total, remaining }) {
   return (
     <div style={{display:"flex",gap:"3px",alignItems:"center"}}>
       {[...Array(total)].map((_,i)=>(
         <span key={i} style={{fontSize:"16px",
           filter:i<remaining?"none":"grayscale(1) opacity(0.2)",
-          transition:"filter 0.3s, transform 0.3s",
-          display:"inline-block",
+          transition:"filter 0.3s, transform 0.3s",display:"inline-block",
           transform:i<remaining?"scale(1)":"scale(0.75)"}}>❤️</span>
       ))}
     </div>
   );
 }
 
-// ── Challenge Logo (Emoji หรือรูปจาก Drive) ──────────────
 function ChallengeLogo({ logoImageUrl, logoEmoji, size=52 }) {
   if (logoImageUrl) {
     return (
-      <div style={{
-        width: size+"px", height: size+"px",
-        borderRadius: "50%",
-        overflow: "hidden",
-        margin: "0 auto",
-        border: "2px solid rgba(231,76,60,.5)",
-        boxShadow: "0 0 20px rgba(231,76,60,.4)",
-        background: "rgba(0,0,0,0.3)",
-      }}>
+      <div style={{width:size+"px",height:size+"px",borderRadius:"50%",overflow:"hidden",
+        margin:"0 auto",border:"2px solid rgba(231,76,60,.5)",
+        boxShadow:"0 0 20px rgba(231,76,60,.4)",background:"rgba(0,0,0,0.3)"}}>
         <img src={logoImageUrl} alt="logo"
           style={{width:"100%",height:"100%",objectFit:"cover",display:"block"}}
-          onError={e=>{ const target = e.target as any; target.style.display="none"; target.parentNode.innerHTML = logoEmoji||"⚡"; }}
-        />
+          onError={e=>{ const t=e.target as any; t.style.display="none"; t.parentNode.innerHTML=logoEmoji||"⚡"; }}/>
       </div>
     );
   }
   return <div style={{fontSize:size+"px",textAlign:"center",lineHeight:1}}>{logoEmoji||"⚡"}</div>;
 }
 
-// ── SET SELECT ────────────────────────────────────────────
 function SetSelectScreen({ onSelect, theme }) {
   const [search,setSearch]=useState("");
   const filtered=QUIZ_SETS.filter(s=>s.name.includes(search)||s.id.includes(search));
@@ -284,9 +315,7 @@ function SetSelectScreen({ onSelect, theme }) {
                 <div style={{color:"#6b5a3e",fontSize:"12px",fontFamily:"'Cinzel',serif",marginTop:"2px"}}>
                   {set.id} · {set.total}ข้อ · {set.timeLimit/60}นาที · ผ่าน {set.passingScore} คะแนน
                 </div>
-                <div style={{color:"#3a6a3a",fontSize:"11px",fontFamily:"'Courier New',monospace",marginTop:"3px"}}>
-                  ?set={set.id}
-                </div>
+                <div style={{color:"#3a6a3a",fontSize:"11px",fontFamily:"'Courier New',monospace",marginTop:"3px"}}>?set={set.id}</div>
               </div>
               <span style={{color:tc,fontSize:"22px"}}>›</span>
             </button>
@@ -297,12 +326,24 @@ function SetSelectScreen({ onSelect, theme }) {
   );
 }
 
-// ── LOGIN ─────────────────────────────────────────────────
 function LoginScreen({ set, onConfirm, onBack, isDirectLink, theme, isChallenge, challengeConfig, challengeLabel }) {
   const [sid,setSid]=useState("");
   const [student,setStudent]=useState(null);
   const [loading,setLoading]=useState(false);
   const [error,setError]=useState("");
+// ⚡ Warm-up Apps Script ระหว่างรอกรอกรหัส (ช่วยลดอาการ Cold Start)
+  useEffect(() => {
+    let isCancelled = false;
+
+    apiGet({ action: "ping" })
+      .catch(() => {
+        // เงียบไว้หากเกิด Error ไม่ให้กระทบ UX ของผู้ใช้
+      });
+
+    return () => {
+      isCancelled = true;
+    };
+  }, []);
   const tc=theme.themeColor;
   const lookup=async()=>{
     if(!sid.trim()) return;
@@ -329,11 +370,7 @@ function LoginScreen({ set, onConfirm, onBack, isDirectLink, theme, isChallenge,
         <div style={{textAlign:"center",marginBottom:"24px"}}>
           <div style={{marginBottom:"10px"}}>
             {isChallenge
-              ? <ChallengeLogo
-                  logoImageUrl={challengeConfig?.logoImageUrl||""}
-                  logoEmoji={challengeConfig?.logoEmoji||"⚡"}
-                  size={52}
-                />
+              ? <ChallengeLogo logoImageUrl={challengeConfig?.logoImageUrl||""} logoEmoji={challengeConfig?.logoEmoji||"⚡"} size={52}/>
               : <div style={{fontSize:"44px",lineHeight:1}}>{theme.logoEmoji}</div>
             }
           </div>
@@ -343,7 +380,7 @@ function LoginScreen({ set, onConfirm, onBack, isDirectLink, theme, isChallenge,
             {isChallenge?"Challenge Mode":"ลุยโจทย์"}
           </h1>
           <p style={{color:"#8b7355",fontFamily:"'Cinzel',serif",fontSize:"12px",margin:0}}>
-            {isChallenge ? (challengeLabel||set.id) : `${set.id} · ${set.total}ข้อ · ผ่าน ${set.passingScore} คะแนน`}
+            {isChallenge?(challengeLabel||set.id):`${set.id} · ${set.total}ข้อ · ผ่าน ${set.passingScore} คะแนน`}
           </p>
         </div>
         <label style={{display:"block",color:"#8b7355",fontSize:"11px",
@@ -397,7 +434,7 @@ function LoginScreen({ set, onConfirm, onBack, isDirectLink, theme, isChallenge,
   );
 }
 
-// ── MC Choices ────────────────────────────────────────────
+// ── MC Choices — รองรับ Markdown ในตัวเลือก ──────────────
 function McChoices({ shuffled, selNow, onSelect, tc, disabled=false, correctOrigIndex=null, showAnswer=false }) {
   return (
     <div style={{display:"flex",flexDirection:"column",gap:"9px"}}>
@@ -414,8 +451,7 @@ function McChoices({ shuffled, selNow, onSelect, tc, disabled=false, correctOrig
           else { bg="rgba(255,255,255,.01)"; border=`1px solid ${tc}11`; color="#5a4a30"; }
         }
         return (
-          <button key={si} onClick={()=>!disabled&&onSelect(si)}
-            disabled={disabled}
+          <button key={si} onClick={()=>!disabled&&onSelect(si)} disabled={disabled}
             style={{background:bg,border,borderRadius:"10px",padding:"13px 16px",
               color,fontFamily:"'Sarabun',sans-serif",fontSize:"16px",
               cursor:disabled?"default":"pointer",textAlign:"left",
@@ -427,12 +463,11 @@ function McChoices({ shuffled, selNow, onSelect, tc, disabled=false, correctOrig
                 :(sel?tc:`${tc}11`),
               border:"none",display:"flex",alignItems:"center",justifyContent:"center",
               fontSize:"12px",fontWeight:700,fontFamily:"'Cinzel',serif",
-              color:showAnswer
-                ?(isCorrectChoice?"#27ae60":isWrongSelected?"#e74c3c":"#4a3a20")
-                :(sel?"#1a0e00":"#8b7355")}}>
+              color:showAnswer?(isCorrectChoice?"#27ae60":isWrongSelected?"#e74c3c":"#4a3a20"):(sel?"#1a0e00":"#8b7355")}}>
               {["ก","ข","ค","ง"][si]}
             </span>
-            <span style={{flex:1}}>{choice.text}</span>
+            {/* ✅ ตัวเลือกรองรับ Markdown */}
+            <span style={{flex:1}}><MdText>{choice.text}</MdText></span>
             {showAnswer&&isCorrectChoice&&<span style={{fontSize:"14px"}}>✓</span>}
             {showAnswer&&isWrongSelected&&<span style={{fontSize:"14px"}}>✗</span>}
           </button>
@@ -442,7 +477,6 @@ function McChoices({ shuffled, selNow, onSelect, tc, disabled=false, correctOrig
   );
 }
 
-// ── Text Input ────────────────────────────────────────────
 function TextInput({ value, onChange, tc, disabled=false }) {
   return (
     <div style={{display:"flex",flexDirection:"column",gap:"12px"}}>
@@ -454,8 +488,7 @@ function TextInput({ value, onChange, tc, disabled=false }) {
       </div>
       <div style={{position:"relative"}}>
         <input type="text" inputMode="decimal" value={value}
-          onChange={e=>!disabled&&onChange(e.target.value)}
-          disabled={disabled}
+          onChange={e=>!disabled&&onChange(e.target.value)} disabled={disabled}
           placeholder="พิมพ์คำตอบที่นี่ เช่น 7.5"
           style={{width:"100%",boxSizing:"border-box",
             background:value?`${tc}11`:"rgba(255,255,255,.03)",
@@ -477,7 +510,86 @@ function TextInput({ value, onChange, tc, disabled=false }) {
   );
 }
 
-// ── QUIZ SCREEN (normal) ──────────────────────────────────
+// ── โจทย์กล่อง — ใช้ QuestionText (รองรับ Markdown) ────────
+function QuestionBox({ q, current, tc }) {
+  return (
+    <div style={{background:`${tc}08`,border:`1px solid ${tc}22`,borderRadius:"12px",
+      padding:"10px",marginBottom:"16px",minHeight:"180px",
+      display:"flex",alignItems:"center",justifyContent:"center"}}>
+      {q.imageUrl ? (
+        <img src={q.imageUrl} alt="โจทย์"
+          style={{width:"100%",maxHeight:"400px",objectFit:"contain",borderRadius:"8px",display:"block"}}/>
+      ) : q.setText ? (
+        // ✅ โจทย์ข้อความรองรับ Markdown
+        <QuestionText text={q.setText}/>
+      ) : (
+        <p style={{color:"#8b7355",fontFamily:"'Cinzel',serif",fontSize:"13px",textAlign:"center",margin:0}}>
+          ข้อที่ {current+1}
+        </p>
+      )}
+    </div>
+  );
+}
+
+// ── เฉลย — ใช้ MdText ────────────────────────────────────
+function AnswerRow({ r, i, tc }) {
+  const pts=r.question.points??1;
+  let correctText, selectedText;
+  if(r.question.questionType==="text"){
+    correctText=String(r.question.correctTextAnswer??"-");
+    selectedText=r.userTextAnswer||"ไม่ได้ตอบ";
+  } else {
+    correctText=r.shuffledChoices.find(c=>c.origIndex===r.question.answer)?.text??"-";
+    selectedText=r.selectedOrigIndex!==null
+      ?r.shuffledChoices.find(c=>c.origIndex===r.selectedOrigIndex)?.text??"-"
+      :"ไม่ได้ตอบ";
+  }
+  return (
+    <div style={{background:r.isCorrect?"rgba(39,174,96,.07)":"rgba(231,76,60,.07)",
+      border:`1px solid ${r.isCorrect?"rgba(39,174,96,.3)":"rgba(231,76,60,.3)"}`,
+      borderRadius:"10px",padding:"14px"}}>
+      <div style={{display:"flex",alignItems:"center",gap:"8px",marginBottom:"8px",flexWrap:"wrap"}}>
+        <span style={{fontFamily:"'Cinzel',serif",fontSize:"12px",color:r.isCorrect?"#27ae60":"#e74c3c"}}>
+          {r.isCorrect?"✓":"✗"} ข้อ {i+1}
+        </span>
+        <span style={{background:r.isCorrect?"rgba(39,174,96,.2)":"rgba(231,76,60,.15)",
+          border:`1px solid ${r.isCorrect?"rgba(39,174,96,.4)":"rgba(231,76,60,.3)"}`,
+          borderRadius:"12px",padding:"1px 8px",fontSize:"11px",
+          color:r.isCorrect?"#27ae60":"#e74c3c",fontFamily:"'Cinzel',serif",fontWeight:700}}>
+          {r.isCorrect?"+":"-"}{pts} คะแนน
+        </span>
+        {r.question.questionType==="text"&&(
+          <span style={{background:`${tc}22`,border:`1px solid ${tc}44`,borderRadius:"10px",
+            padding:"1px 8px",fontSize:"10px",color:tc}}>✏ อัตนัย</span>
+        )}
+        {r.question.isRare&&<span style={{color:"#9b59b6",fontSize:"11px"}}>✦ หายาก</span>}
+      </div>
+      {/* ✅ เฉลยรองรับ Markdown */}
+      <div style={{fontFamily:"'Sarabun',sans-serif",fontSize:"14px",color:"#c0a878",marginBottom:"8px",lineHeight:1.6}}>
+        {r.isCorrect
+          ? <span>✓ ตอบถูก: <strong style={{color:"#27ae60"}}><MdText>{correctText}</MdText></strong></span>
+          : <span>
+              คุณตอบ: <span style={{color:"#e74c3c"}}><MdText>{selectedText}</MdText></span>
+              {" · "}เฉลย: <strong style={{color:"#27ae60"}}><MdText>{correctText}</MdText></strong>
+            </span>
+        }
+      </div>
+      <div style={{display:"flex",gap:"8px",flexWrap:"wrap"}}>
+        {r.question.linkText&&(
+          <a href={r.question.linkText} target="_blank" rel="noreferrer" style={{fontSize:"12px",color:tc,
+            textDecoration:"none",padding:"4px 12px",border:`1px solid ${tc}55`,
+            borderRadius:"20px",fontFamily:"'Cinzel',serif"}}>📄 เฉลยเขียน</a>
+        )}
+        {r.question.linkVideo&&(
+          <a href={r.question.linkVideo} target="_blank" rel="noreferrer" style={{fontSize:"12px",color:"#e74c3c",
+            textDecoration:"none",padding:"4px 12px",border:"1px solid rgba(231,76,60,.4)",
+            borderRadius:"20px",fontFamily:"'Cinzel',serif"}}>▶ เฉลยวิดีโอ</a>
+        )}
+      </div>
+    </div>
+  );
+}
+
 function QuizScreen({ set, student, questions, onFinish, theme }) {
   const [current,setCurrent]=useState(0);
   const [answers,setAnswers]=useState({});
@@ -569,16 +681,8 @@ function QuizScreen({ set, student, questions, onFinish, theme }) {
               fontFamily:"'Cinzel',serif",boxShadow:"0 0 10px rgba(155,89,182,.5)"}}>✦ โจทย์หายาก</span>
           )}
         </div>
-        <div style={{background:`${tc}08`,border:`1px solid ${tc}22`,borderRadius:"12px",
-          padding:"10px",marginBottom:"16px",minHeight:"220px",display:"flex",alignItems:"center",justifyContent:"center"}}>
-          {q.imageUrl?(
-            <img src={q.imageUrl} alt="โจทย์" style={{width:"100%",maxHeight:"400px",objectFit:"contain",borderRadius:"8px"}}/>
-          ):q.setText?(
-            <p style={{color:"#f5e6c8",fontFamily:"'Sarabun',sans-serif",fontSize:"18px",textAlign:"center",margin:0,lineHeight:1.6}}>{q.setText}</p>
-          ):(
-            <p style={{color:"#8b7355",fontFamily:"'Cinzel',serif",fontSize:"13px",textAlign:"center",margin:0}}>ข้อที่ {current+1}</p>
-          )}
-        </div>
+        {/* ✅ ใช้ QuestionBox ที่รองรับ Markdown */}
+        <QuestionBox q={q} current={current} tc={tc}/>
         {q.questionType==="text"?(
           <div onKeyDown={e=>e.key==="Enter"&&current<questions.length-1&&setCurrent(c=>c+1)}>
             <TextInput value={selNow||""} onChange={val=>setAnswers(a=>({...a,[current]:val}))} tc={tc}/>
@@ -592,14 +696,13 @@ function QuizScreen({ set, student, questions, onFinish, theme }) {
         <button onClick={()=>setCurrent(c=>c-1)} disabled={current===0} style={{
           flex:1,padding:"12px",background:`${tc}11`,border:`1px solid ${tc}44`,borderRadius:"10px",
           color:tc,fontFamily:"'Cinzel',serif",fontSize:"14px",cursor:current===0?"not-allowed":"pointer",
-          opacity:current===0?.35:1}}>
-          ← ก่อนหน้า
-        </button>
+          opacity:current===0?.35:1}}>← ก่อนหน้า</button>
         {current<questions.length-1?(
           <button onClick={()=>setCurrent(c=>c+1)} style={{flex:2,padding:"12px",
-            background:`linear-gradient(135deg,#6b4f10,${tc},#6b4f10)`,
-            border:"none",borderRadius:"10px",color:"#1a0e00",
-            fontFamily:"'Cinzel',serif",fontSize:"15px",fontWeight:700,cursor:"pointer"}}>ถัดไป →</button>
+            background:`linear-gradient(135deg,#6b4f10,${tc},#6b4f10)`,border:"none",
+            borderRadius:"10px",color:"#1a0e00",fontFamily:"'Cinzel',serif",fontSize:"15px",fontWeight:700,cursor:"pointer"}}>
+            ถัดไป →
+          </button>
         ):(
           <button onClick={()=>finish(false)} style={{flex:2,padding:"12px",border:"none",borderRadius:"10px",
             background:answered===questions.length
@@ -615,7 +718,6 @@ function QuizScreen({ set, student, questions, onFinish, theme }) {
   );
 }
 
-// ── RESULT SCREEN (normal) ────────────────────────────────
 function ResultScreen({ data, onRetry, onHome, isDirectLink, theme }) {
   const {results,timeUsed,timeUp,student,set,maxScore}=data;
   const totalScore=calcTotalScore(results);
@@ -708,8 +810,11 @@ function ResultScreen({ data, onRetry, onHome, isDirectLink, theme }) {
           </div>
 
           <div style={{display:"grid",gridTemplateColumns:"1fr 1fr",gap:"8px",marginBottom:"16px"}}>
-            {[["✓ ข้อถูก",`${correctCount}/${results.length}`,"#27ae60"],["★ คะแนน",`${totalScore}/${maxScore}`,tc],
-              ["⏱ เวลา",formatTime(timeUsed),"#a89070"],["✦ หายาก",`${rareOK.length} ข้อ`,"#9b59b6"]].map(([k,v,c])=>(
+            {[["✓ ข้อถูก",`${correctCount}/${results.length}`,"#27ae60"],
+              ["★ คะแนน",`${totalScore}/${maxScore}`,tc],
+              ["⏱ เวลา",formatTime(timeUsed),"#a89070"],
+              ["✦ หายาก",`${rareOK.length} ข้อ`,"#9b59b6"]
+            ].map(([k,v,c])=>(
               <div key={k} style={{background:"rgba(255,255,255,.02)",border:"1px solid rgba(212,175,55,.12)",
                 borderRadius:"10px",padding:"12px",textAlign:"center"}}>
                 <div style={{color:"#6b5a3e",fontSize:"11px",fontFamily:"'Cinzel',serif",marginBottom:"4px"}}>{k}</div>
@@ -739,61 +844,10 @@ function ResultScreen({ data, onRetry, onHome, isDirectLink, theme }) {
             </button>
           </div>
 
+          {/* ✅ ใช้ AnswerRow ที่รองรับ Markdown */}
           {showDetail&&(
             <div style={{display:"flex",flexDirection:"column",gap:"10px",marginBottom:"20px"}}>
-              {results.map((r,i)=>{
-                const pts=r.question.points??1;
-                let correctText,selectedText;
-                if(r.question.questionType==="text"){
-                  correctText=String(r.question.correctTextAnswer??"-");
-                  selectedText=r.userTextAnswer||"ไม่ได้ตอบ";
-                } else {
-                  correctText=r.shuffledChoices.find(c=>c.origIndex===r.question.answer)?.text??"-";
-                  selectedText=r.selectedOrigIndex!==null
-                    ?r.shuffledChoices.find(c=>c.origIndex===r.selectedOrigIndex)?.text??"-"
-                    :"ไม่ได้ตอบ";
-                }
-                return (
-                  <div key={i} style={{background:r.isCorrect?"rgba(39,174,96,.07)":"rgba(231,76,60,.07)",
-                    border:`1px solid ${r.isCorrect?"rgba(39,174,96,.3)":"rgba(231,76,60,.3)"}`,
-                    borderRadius:"10px",padding:"14px"}}>
-                    <div style={{display:"flex",alignItems:"center",gap:"8px",marginBottom:"8px",flexWrap:"wrap"}}>
-                      <span style={{fontFamily:"'Cinzel',serif",fontSize:"12px",color:r.isCorrect?"#27ae60":"#e74c3c"}}>
-                        {r.isCorrect?"✓":"✗"} ข้อ {i+1}
-                      </span>
-                      <span style={{background:r.isCorrect?"rgba(39,174,96,.2)":"rgba(231,76,60,.15)",
-                        border:`1px solid ${r.isCorrect?"rgba(39,174,96,.4)":"rgba(231,76,60,.3)"}`,
-                        borderRadius:"12px",padding:"1px 8px",fontSize:"11px",
-                        color:r.isCorrect?"#27ae60":"#e74c3c",fontFamily:"'Cinzel',serif",fontWeight:700}}>
-                        {r.isCorrect?"+":"-"}{pts} คะแนน
-                      </span>
-                      {r.question.questionType==="text"&&(
-                        <span style={{background:`${tc}22`,border:`1px solid ${tc}44`,borderRadius:"10px",
-                          padding:"1px 8px",fontSize:"10px",color:tc}}>✏ อัตนัย</span>
-                      )}
-                      {r.question.isRare&&<span style={{color:"#9b59b6",fontSize:"11px"}}>✦ หายาก</span>}
-                    </div>
-                    <div style={{fontFamily:"'Sarabun',sans-serif",fontSize:"14px",color:"#c0a878",marginBottom:"8px",lineHeight:1.6}}>
-                      {r.isCorrect
-                        ?<span>✓ ตอบถูก: <span style={{color:"#27ae60",fontWeight:600}}>{correctText}</span></span>
-                        :<span>คุณตอบ: <span style={{color:"#e74c3c"}}>{selectedText}</span>{" · "}เฉลย: <span style={{color:"#27ae60",fontWeight:600}}>{correctText}</span></span>
-                      }
-                    </div>
-                    <div style={{display:"flex",gap:"8px",flexWrap:"wrap"}}>
-                      {r.question.linkText&&(
-                        <a href={r.question.linkText} target="_blank" rel="noreferrer" style={{fontSize:"12px",color:tc,
-                          textDecoration:"none",padding:"4px 12px",border:`1px solid ${tc}55`,
-                          borderRadius:"20px",fontFamily:"'Cinzel',serif"}}>📄 เฉลยเขียน</a>
-                      )}
-                      {r.question.linkVideo&&(
-                        <a href={r.question.linkVideo} target="_blank" rel="noreferrer" style={{fontSize:"12px",color:"#e74c3c",
-                          textDecoration:"none",padding:"4px 12px",border:"1px solid rgba(231,76,60,.4)",
-                          borderRadius:"20px",fontFamily:"'Cinzel',serif"}}>▶ เฉลยวิดีโอ</a>
-                      )}
-                    </div>
-                  </div>
-                );
-              })}
+              {results.map((r,i)=><AnswerRow key={i} r={r} i={i} tc={tc}/>)}
             </div>
           )}
 
@@ -804,10 +858,9 @@ function ResultScreen({ data, onRetry, onHome, isDirectLink, theme }) {
                 color:tc,fontFamily:"'Cinzel',serif",fontSize:"14px",cursor:"pointer"}}>หน้าหลัก</button>
             )}
             <button type="button" onClick={onRetry} style={{flex:2,padding:"13px",
-              background:`linear-gradient(135deg,#6b4f10,${tc},#6b4f10)`,
-              border:"none",borderRadius:"10px",color:"#1a0e00",
-              fontFamily:"'Cinzel',serif",fontSize:"15px",fontWeight:700,cursor:"pointer",
-              boxShadow:`0 4px 20px ${tc}33`}}>ทำใหม่</button>
+              background:`linear-gradient(135deg,#6b4f10,${tc},#6b4f10)`,border:"none",
+              borderRadius:"10px",color:"#1a0e00",fontFamily:"'Cinzel',serif",
+              fontSize:"15px",fontWeight:700,cursor:"pointer",boxShadow:`0 4px 20px ${tc}33`}}>ทำใหม่</button>
           </div>
 
           <a href={LOOKER_STUDIO_URL} target="_blank" rel="noreferrer" style={{
@@ -830,17 +883,15 @@ function ResultScreen({ data, onRetry, onHome, isDirectLink, theme }) {
   );
 }
 
-// ── CHALLENGE SCREEN ──────────────────────────────────────
 function ChallengeScreen({ challengeConfig, student, pool, onFinish, theme }) {
   const { maxQuestions, lives: maxLives, challengeName } = challengeConfig;
   const tc = theme.themeColor;
   const ACCENT = "#e74c3c";
-
   const [current, setCurrent] = useState(null);
   const [shuffledChoices, setShuffledChoices] = useState([]);
   const [selected, setSelected] = useState(null);
   const [textVal, setTextVal] = useState("");
-  const [phase, setPhase] = useState("question"); // question | reveal_correct | reveal_wrong
+  const [phase, setPhase] = useState("question");
   const [lives, setLives] = useState(maxLives);
   const [streak, setStreak] = useState(0);
   const [score, setScore] = useState(0);
@@ -884,12 +935,8 @@ function ChallengeScreen({ challengeConfig, student, pool, onFinish, theme }) {
     historyRef.current=newHistory;
     setHistory(newHistory);
     setQuestionNum(n=>n+1);
-
     if(isCorrect){
-      scoreRef.current+=pts;
-      setScore(s=>s+pts);
-      setStreak(s=>s+1);
-      setPhase("reveal_correct");
+      scoreRef.current+=pts; setScore(s=>s+pts); setStreak(s=>s+1); setPhase("reveal_correct");
       const nextNum=questionNum+1;
       setTimeout(()=>{
         if(maxQuestions>0&&nextNum>=maxQuestions){
@@ -897,22 +944,15 @@ function ChallengeScreen({ challengeConfig, student, pool, onFinish, theme }) {
         } else { loadNext(nextNum, livesRef.current, newHistory); }
       },1200);
     } else {
-      const newLives=livesRef.current-1;
-      livesRef.current=newLives;
-      setLives(newLives);
-      setStreak(0);
-      setShakeHeart(true);
-      setTimeout(()=>setShakeHeart(false),600);
-      setPhase("reveal_wrong");
+      const newLives=livesRef.current-1; livesRef.current=newLives; setLives(newLives); setStreak(0);
+      setShakeHeart(true); setTimeout(()=>setShakeHeart(false),600); setPhase("reveal_wrong");
     }
   }
 
   function handleNextAfterWrong() {
     if(livesRef.current<=0){
       onFinish({history:historyRef.current,score:scoreRef.current,lives:0,livesMax:maxLives,reason:"gameover",student,challengeConfig});
-    } else {
-      loadNext(questionNum, livesRef.current, historyRef.current);
-    }
+    } else { loadNext(questionNum, livesRef.current, historyRef.current); }
   }
 
   if(!current) return (
@@ -926,10 +966,8 @@ function ChallengeScreen({ challengeConfig, student, pool, onFinish, theme }) {
   return (
     <div style={{minHeight:"100vh",display:"flex",flexDirection:"column",
       padding:"12px",maxWidth:"720px",margin:"0 auto",position:"relative",zIndex:1}}>
-
-      {/* Header */}
-      <div style={{background:"rgba(15,8,2,.94)",
-        border:`1px solid ${ACCENT}44`,borderRadius:"12px",padding:"10px 14px",marginBottom:"12px"}}>
+      <div style={{background:"rgba(15,8,2,.94)",border:`1px solid ${ACCENT}44`,
+        borderRadius:"12px",padding:"10px 14px",marginBottom:"12px"}}>
         <div style={{display:"flex",justifyContent:"space-between",alignItems:"center",marginBottom:"8px"}}>
           <div>
             <div style={{display:"flex",alignItems:"center",gap:"6px"}}>
@@ -951,9 +989,7 @@ function ChallengeScreen({ challengeConfig, student, pool, onFinish, theme }) {
             <div style={{color:tc,fontFamily:"'Cinzel',serif",fontSize:"22px",fontWeight:900}}>
               {score}<span style={{fontSize:"12px",color:"#6b5a3e",marginLeft:"4px"}}>คะแนน</span>
             </div>
-            {streak>=3&&(
-              <div style={{fontSize:"11px",color:"#f39c12",fontFamily:"'Cinzel',serif"}}>🔥 ×{streak} ติดต่อกัน</div>
-            )}
+            {streak>=3&&<div style={{fontSize:"11px",color:"#f39c12",fontFamily:"'Cinzel',serif"}}>🔥 ×{streak} ติดต่อกัน</div>}
           </div>
         </div>
         <div style={{display:"flex",alignItems:"center",gap:"10px",
@@ -972,7 +1008,6 @@ function ChallengeScreen({ challengeConfig, student, pool, onFinish, theme }) {
         </div>
       </div>
 
-      {/* Question card */}
       <div style={{flex:1,
         background:isReveal
           ?(isCorrectReveal?"linear-gradient(160deg,rgba(10,30,10,.97),rgba(15,40,15,.97))"
@@ -1015,18 +1050,8 @@ function ChallengeScreen({ challengeConfig, student, pool, onFinish, theme }) {
           </span>
         </div>
 
-        <div style={{background:`${tc}08`,border:`1px solid ${tc}22`,borderRadius:"12px",
-          padding:"10px",marginBottom:"16px",minHeight:"180px",display:"flex",alignItems:"center",justifyContent:"center"}}>
-          {current.imageUrl?(
-            <img src={current.imageUrl} alt="โจทย์" style={{width:"100%",maxHeight:"360px",objectFit:"contain",borderRadius:"8px"}}/>
-          ):current.setText?(
-            <p style={{color:"#f5e6c8",fontFamily:"'Sarabun',sans-serif",fontSize:"18px",textAlign:"center",margin:0,lineHeight:1.6}}>
-              {current.setText}
-            </p>
-          ):(
-            <p style={{color:"#8b7355",fontFamily:"'Cinzel',serif",fontSize:"13px",textAlign:"center",margin:0}}>ข้อที่ {questionNum+1}</p>
-          )}
-        </div>
+        {/* ✅ ใช้ QuestionBox รองรับ Markdown */}
+        <QuestionBox q={current} current={questionNum} tc={tc}/>
 
         {current.questionType==="text"?(
           <div onKeyDown={e=>{ if(e.key==="Enter"&&!isReveal) submitAnswer(); }}>
@@ -1036,16 +1061,16 @@ function ChallengeScreen({ challengeConfig, student, pool, onFinish, theme }) {
                 background:"rgba(39,174,96,.1)",border:"1px solid rgba(39,174,96,.3)",
                 borderRadius:"10px",textAlign:"center"}}>
                 <span style={{color:"#8b7355",fontSize:"12px",fontFamily:"'Cinzel',serif"}}>เฉลย: </span>
-                <span style={{color:"#27ae60",fontWeight:700,fontSize:"18px",fontFamily:"'Sarabun',sans-serif"}}>
-                  {current.correctTextAnswer}
-                </span>
+                {/* ✅ เฉลยอัตนัย Markdown */}
+                <strong style={{color:"#27ae60",fontSize:"18px",fontFamily:"'Sarabun',sans-serif"}}>
+                  <MdText>{current.correctTextAnswer}</MdText>
+                </strong>
               </div>
             )}
           </div>
         ):(
           <McChoices shuffled={shuffledChoices} selNow={selected} onSelect={si=>!isReveal&&setSelected(si)}
-            tc={tc} disabled={isReveal}
-            correctOrigIndex={isReveal?current.answer:null} showAnswer={isReveal}/>
+            tc={tc} disabled={isReveal} correctOrigIndex={isReveal?current.answer:null} showAnswer={isReveal}/>
         )}
 
         {isReveal&&!isCorrectReveal&&(current.linkText||current.linkVideo)&&(
@@ -1064,7 +1089,6 @@ function ChallengeScreen({ challengeConfig, student, pool, onFinish, theme }) {
         )}
       </div>
 
-      {/* Action */}
       {!isReveal?(
         <button onClick={submitAnswer}
           disabled={current.questionType!=="text"?selected===null:textVal.trim()===""}
@@ -1098,7 +1122,6 @@ function ChallengeScreen({ challengeConfig, student, pool, onFinish, theme }) {
   );
 }
 
-// ── CHALLENGE RESULT SCREEN ───────────────────────────────
 function ChallengeResultScreen({ data, onRetry, onHome, theme }) {
   const { history, score, lives, livesMax, reason, student, challengeConfig } = data;
   const tc = theme.themeColor;
@@ -1108,7 +1131,6 @@ function ChallengeResultScreen({ data, onRetry, onHome, theme }) {
   const maxScore = history.reduce((s,h)=>s+(h.question.points??1),0);
   let bestStreak=0, cur=0;
   history.forEach(h=>{ if(h.isCorrect){cur++;bestStreak=Math.max(bestStreak,cur);}else cur=0; });
-
   const [showDetail,setShowDetail]=useState(false);
   const [saving,setSaving]=useState(true);
   const [saveErr,setSaveErr]=useState(false);
@@ -1132,13 +1154,22 @@ function ChallengeResultScreen({ data, onRetry, onHome, theme }) {
     })();
   },[]);
 
+  // ใช้ AnswerRow สำหรับ challenge history ด้วย
+  const historyAsResults = history.map(h => ({
+    ...h,
+    question: h.question,
+    isCorrect: h.isCorrect,
+    selectedOrigIndex: h.selectedOrigIndex,
+    userTextAnswer: h.userTextAnswer,
+    shuffledChoices: h.shuffledChoices,
+  }));
+
   return (
     <div style={{minHeight:"100vh",overflowY:"auto",padding:"20px",display:"flex",flexDirection:"column",alignItems:"center"}}>
       <div style={{maxWidth:"560px",width:"100%",marginTop:"20px",marginBottom:"40px",
         background:"linear-gradient(160deg,rgba(20,12,5,.97),rgba(38,22,8,.97))",
         border:`2px solid ${isComplete?"rgba(39,174,96,.5)":"rgba(231,76,60,.4)"}`,
         borderRadius:"16px",padding:"32px 28px",boxShadow:"0 20px 60px rgba(0,0,0,.8)",position:"relative",zIndex:1}}>
-
         <div style={{textAlign:"center",marginBottom:"24px"}}>
           <div style={{marginBottom:"8px"}}>
             {data.challengeConfig?.logoImageUrl
@@ -1195,57 +1226,10 @@ function ChallengeResultScreen({ data, onRetry, onHome, theme }) {
           </button>
         </div>
 
+        {/* ✅ ใช้ AnswerRow รองรับ Markdown ใน Challenge Result */}
         {showDetail&&(
           <div style={{display:"flex",flexDirection:"column",gap:"10px",marginBottom:"16px"}}>
-            {history.map((h,i)=>{
-              const pts=h.question.points??1;
-              let correctText,selectedText;
-              if(h.question.questionType==="text"){
-                correctText=String(h.question.correctTextAnswer??"-");
-                selectedText=h.userTextAnswer||"ไม่ได้ตอบ";
-              } else {
-                correctText=h.shuffledChoices.find(c=>c.origIndex===h.question.answer)?.text??"-";
-                selectedText=h.selectedOrigIndex!==null
-                  ?h.shuffledChoices.find(c=>c.origIndex===h.selectedOrigIndex)?.text??"-"
-                  :"ไม่ได้ตอบ";
-              }
-              return (
-                <div key={i} style={{background:h.isCorrect?"rgba(39,174,96,.07)":"rgba(231,76,60,.07)",
-                  border:`1px solid ${h.isCorrect?"rgba(39,174,96,.3)":"rgba(231,76,60,.3)"}`,
-                  borderRadius:"10px",padding:"14px"}}>
-                  <div style={{display:"flex",alignItems:"center",gap:"8px",marginBottom:"8px",flexWrap:"wrap"}}>
-                    <span style={{fontFamily:"'Cinzel',serif",fontSize:"12px",color:h.isCorrect?"#27ae60":"#e74c3c"}}>
-                      {h.isCorrect?"✓":"✗"} ข้อ {h.questionNumber}
-                    </span>
-                    <span style={{background:h.isCorrect?"rgba(39,174,96,.2)":"rgba(231,76,60,.15)",
-                      border:`1px solid ${h.isCorrect?"rgba(39,174,96,.4)":"rgba(231,76,60,.3)"}`,
-                      borderRadius:"12px",padding:"1px 8px",fontSize:"11px",
-                      color:h.isCorrect?"#27ae60":"#e74c3c",fontFamily:"'Cinzel',serif",fontWeight:700}}>
-                      {h.isCorrect?"+":"-"}{pts} คะแนน
-                    </span>
-                    <span style={{color:"#6b5a3e",fontSize:"10px",fontFamily:"'Cinzel',serif"}}>{h.question.setName}</span>
-                  </div>
-                  <div style={{fontFamily:"'Sarabun',sans-serif",fontSize:"14px",color:"#c0a878",marginBottom:"8px",lineHeight:1.6}}>
-                    {h.isCorrect
-                      ?<span>✓ ตอบถูก: <span style={{color:"#27ae60",fontWeight:600}}>{correctText}</span></span>
-                      :<span>คุณตอบ: <span style={{color:"#e74c3c"}}>{selectedText}</span>{" · "}เฉลย: <span style={{color:"#27ae60",fontWeight:600}}>{correctText}</span></span>
-                    }
-                  </div>
-                  <div style={{display:"flex",gap:"8px",flexWrap:"wrap"}}>
-                    {h.question.linkText&&(
-                      <a href={h.question.linkText} target="_blank" rel="noreferrer" style={{fontSize:"12px",color:tc,
-                        textDecoration:"none",padding:"4px 12px",border:`1px solid ${tc}55`,
-                        borderRadius:"20px",fontFamily:"'Cinzel',serif"}}>📄 เฉลยเขียน</a>
-                    )}
-                    {h.question.linkVideo&&(
-                      <a href={h.question.linkVideo} target="_blank" rel="noreferrer" style={{fontSize:"12px",color:"#e74c3c",
-                        textDecoration:"none",padding:"4px 12px",border:"1px solid rgba(231,76,60,.4)",
-                        borderRadius:"20px",fontFamily:"'Cinzel',serif"}}>▶ เฉลยวิดีโอ</a>
-                    )}
-                  </div>
-                </div>
-              );
-            })}
+            {historyAsResults.map((r,i)=><AnswerRow key={i} r={r} i={i} tc={tc}/>)}
           </div>
         )}
 
@@ -1254,10 +1238,9 @@ function ChallengeResultScreen({ data, onRetry, onHome, theme }) {
             background:"rgba(212,175,55,.06)",border:`1px solid ${tc}44`,borderRadius:"10px",
             color:tc,fontFamily:"'Cinzel',serif",fontSize:"14px",cursor:"pointer"}}>หน้าหลัก</button>
           <button type="button" onClick={onRetry} style={{flex:2,padding:"13px",
-            background:`linear-gradient(135deg,#6b4f10,${tc},#6b4f10)`,
-            border:"none",borderRadius:"10px",color:"#1a0e00",
-            fontFamily:"'Cinzel',serif",fontSize:"15px",fontWeight:700,cursor:"pointer",
-            boxShadow:`0 4px 20px ${tc}33`}}>⚡ ลองใหม่</button>
+            background:`linear-gradient(135deg,#6b4f10,${tc},#6b4f10)`,border:"none",
+            borderRadius:"10px",color:"#1a0e00",fontFamily:"'Cinzel',serif",
+            fontSize:"15px",fontWeight:700,cursor:"pointer",boxShadow:`0 4px 20px ${tc}33`}}>⚡ ลองใหม่</button>
         </div>
 
         <a href={LOOKER_STUDIO_URL} target="_blank" rel="noreferrer" style={{
@@ -1279,7 +1262,6 @@ function ChallengeResultScreen({ data, onRetry, onHome, theme }) {
   );
 }
 
-// ── MAIN APP ──────────────────────────────────────────────
 export default function App() {
   const [screen,setScreen]=useState("init");
   const [selectedSet,setSet]=useState(null);
@@ -1292,13 +1274,19 @@ export default function App() {
   const [challengeConfig,setChallengeConfig]=useState(null);
   const [challengePool,setChallengePool]=useState([]);
   const [challengeResult,setChallengeResult]=useState(null);
+  const [cachedConfig, setCachedConfig] = useState(null);
   const isDirectLink=!!getSetFromUrl();
   const isChallenge=mode==="challenge";
 
   useEffect(()=>{
     const setId=getSetFromUrl();
     if(setId){
-      apiGet({action:"getConfig",setId}).then(d=>{ if(d.config) setTheme(buildTheme(d.config)); });
+    apiGet({action:"getConfig",setId}).then(d=>{ 
+      if(d.config) {
+        setTheme(buildTheme(d.config)); 
+        setCachedConfig(d.config); 
+      } 
+    });
       const pseudoSet={ id:setId, name:setId, total:0, passingScore:0, timeLimit:0 };
       if(isChallenge){
         setSet(pseudoSet); setScreen("login");
@@ -1310,25 +1298,26 @@ export default function App() {
     } else setScreen("setSelect");
   },[]);
 
-  // Normal loading
   useEffect(()=>{
     if(screen!=="loading"||!selectedSet||!student||isChallenge) return;
     setLoadError("");
-    Promise.all([
-      apiGet({action:"getQuestions",setName:selectedSet.id}),
-      apiGet({action:"getConfig",setId:selectedSet.id}),
-    ]).then(([qData,cfgData])=>{
-      if(!qData.questions?.length){ setLoadError("ไม่พบข้อสอบในชุด "+selectedSet.id); return; }
-      const shouldShuffle=cfgData.config?.shuffleQuestions!==false;
-      setQuestions(shouldShuffle
-        ?selectQuestions(qData.questions,selectedSet.total)
-        :orderQuestions(qData.questions,selectedSet.total));
-      setTheme(buildTheme(cfgData.config));
-      setScreen("quiz");
-    }).catch(()=>setLoadError("โหลดข้อสอบไม่ได้ กรุณาตรวจสอบการเชื่อมต่อ"));
-  },[screen]);
+    // 👇 ปรับแก้ไข Promise.all ตรงนี้
+  Promise.all([
+    apiGet({action:"getQuestions",setName:selectedSet.id}),
+    cachedConfig 
+      ? Promise.resolve({config:cachedConfig}) 
+      : apiGet({action:"getConfig",setId:selectedSet.id}),
+  ]).then(([qData,cfgData])=>{
+    if(!qData.questions?.length){ setLoadError("ไม่พบข้อสอบในชุด "+selectedSet.id); return; }
+    const shouldShuffle=cfgData.config?.shuffleQuestions!==false;
+    setQuestions(shouldShuffle
+      ?selectQuestions(qData.questions,selectedSet.total)
+      :orderQuestions(qData.questions,selectedSet.total));
+    setTheme(buildTheme(cfgData.config));
+    setScreen("quiz");
+  }).catch(()=>setLoadError("โหลดข้อสอบไม่ได้ กรุณาตรวจสอบการเชื่อมต่อ"));
+},[screen, cachedConfig]); // 👈 เพิ่ม cachedConfig ใน dependency array
 
-  // Challenge loading
   useEffect(()=>{
     if(screen!=="loading"||!selectedSet||!student||!isChallenge) return;
     setLoadError("");
@@ -1349,11 +1338,12 @@ export default function App() {
   },[screen]);
 
   const goHome=()=>{
-    setResult(null); setQuestions([]);
-    setChallengeResult(null); setChallengePool([]);
-    if(isDirectLink){ setStudent(null); setScreen("login"); }
-    else { setSet(null); setStudent(null); setScreen("setSelect"); }
-  };
+  setResult(null); setQuestions([]);
+  setChallengeResult(null); setChallengePool([]);
+  setCachedConfig(null); // 👈 เพิ่มบรรทัดนี้เพื่อล้าง cache ชุดเดิม
+  if(isDirectLink){ setStudent(null); setScreen("login"); }
+  else { setSet(null); setStudent(null); setScreen("setSelect"); }
+};
   const goRetry=()=>{
     setQuestions([]); setResult(null);
     setChallengeResult(null); setChallengePool([]);
@@ -1385,24 +1375,25 @@ export default function App() {
       `}</style>
       <div style={{minHeight:"100vh",fontFamily:"'Sarabun',sans-serif",background:bg}}>
         <Particles color={tc}/>
-
         {screen==="setSelect"&&(
           <SetSelectScreen onSelect={s=>{
             setSet(s);
-            apiGet({action:"getConfig",setId:s.id}).then(d=>{ if(d.config) setTheme(buildTheme(d.config)); });
-            setScreen("login");
-          }} theme={theme}/>
+            apiGet({action:"getConfig",setId:s.id}).then(d=>{ 
+      if(d.config) {
+        setTheme(buildTheme(d.config)); 
+        setCachedConfig(d.config); 
+        } 
+        });
+        setScreen("login");
+        }} theme={theme}/>
         )}
-
         {screen==="login"&&selectedSet&&(
           <LoginScreen set={selectedSet} theme={theme} isDirectLink={isDirectLink}
-            isChallenge={isChallenge}
-            challengeConfig={challengeConfig}
+            isChallenge={isChallenge} challengeConfig={challengeConfig}
             challengeLabel={challengeConfig?.challengeName}
             onConfirm={st=>{ setStudent(st); setScreen("loading"); }}
             onBack={()=>{ setSet(null); setScreen("setSelect"); }}/>
         )}
-
         {screen==="loading"&&(
           loadError
             ?<div style={{minHeight:"100vh",display:"flex",alignItems:"center",justifyContent:"center",padding:"20px"}}>
@@ -1420,7 +1411,6 @@ export default function App() {
                 <Spinner color={tc}/>
               </div>
         )}
-
         {screen==="quiz"&&selectedSet&&student&&questions.length>0&&(
           <QuizScreen set={selectedSet} student={student} questions={questions}
             onFinish={d=>{ setResult(d); setScreen("result"); }} theme={theme}/>
@@ -1429,7 +1419,6 @@ export default function App() {
           <ResultScreen data={resultData} onRetry={goRetry} onHome={goHome}
             isDirectLink={isDirectLink} theme={theme}/>
         )}
-
         {screen==="challenge"&&challengeConfig&&student&&challengePool.length>0&&(
           <ChallengeScreen key={Date.now()}
             challengeConfig={challengeConfig} student={student} pool={challengePool}
