@@ -53,7 +53,8 @@ const LOOKER_STUDIO_URL =
 
 const QUIZ_SETS = [
   { id:"BO-BASIC1", name:"ระบบนิเวศ", total:10, passingScore:10, timeLimit:10*60 },
-  { id:"GK-BASIC1", name:"ลม และสภาพอากาศ", total:10, passingScore:10, timeLimit:10*60 },
+  { id:"GK-BASIC1", name:"วัฐจักรหิน", total:10, passingScore:10, timeLimit:10*60 },
+  { id:"WA-BASIC1", name:"ลม และสภาพอากาศ", total:10, passingScore:10, timeLimit:10*60 },
 ];
 
 const DEFAULT_THEME = {
