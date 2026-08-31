@@ -52,6 +52,7 @@ const LOOKER_STUDIO_URL =
   "https://datastudio.google.com/reporting/658dffb1-a471-427e-8b1a-4f97ffc9a509";
 
 const QUIZ_SETS = [
+  { id:"BO-BASIC1", name:"ระบบนิเวศ", total:10, passingScore:10, timeLimit:10*60 },
   { id:"GK-BASIC1", name:"ลม และสภาพอากาศ", total:10, passingScore:10, timeLimit:10*60 },
 ];
 
