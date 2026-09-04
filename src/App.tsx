@@ -56,6 +56,8 @@ const QUIZ_SETS = [
   { id:"GK-BASIC1", name:"วัฐจักรหิน", total:10, passingScore:8, timeLimit:10*60 },
   { id:"WA-BASIC1", name:"ลม และสภาพอากาศ", total:10, passingScore:8, timeLimit:10*60 },
   { id:"HM-BASIC1", name:"ความชื้น", total:10, passingScore:8, timeLimit:10*60 },
+  { id:"CT-BASIC1", name:"เซลล์และการลำเลียงสารเข้าออกเซลล์", total:10, passingScore:8, timeLimit:10*60 },
+  { id:"DS-BASIC1", name:"ระบบย่อยอาหาร", total:10, passingScore:8, timeLimit:10*60 },
 ];
 
 const DEFAULT_THEME = {
