@@ -49,7 +49,7 @@ const APPS_SCRIPT_URL =
   "https://script.google.com/macros/s/AKfycbzTTMBPvbsZckZgmQz274CBFDD1DYisym4T1Eh_CbvkzV-iDdfvXZzwrT2OSRQo4NPvhw/exec";
 
 const LOOKER_STUDIO_URL =
-  "https://datastudio.google.com/reporting/658dffb1-a471-427e-8b1a-4f97ffc9a509";
+  "https://datastudio.google.com/reporting/966d1ffe-4e23-4ce7-a8de-13b65038e2f8";
 
 const DEFAULT_THEME = {
   logoEmoji:"⚔", themeColor:"#d4af37", fontSize:"22px",
