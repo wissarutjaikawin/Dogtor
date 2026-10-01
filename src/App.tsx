@@ -1,14 +1,36 @@
-import React, { useState, useEffect, useRef, useCallback } from "react";
-import ReactMarkdown from "react-markdown";
-import remarkMath from "remark-math";
-import rehypeKatex from "rehype-katex";
-import "katex/dist/katex.min.css";
+import React, { useState, useEffect, useRef, useCallback, lazy, Suspense } from "react";
+
+// ── Lazy load Markdown+KaTeX เฉพาะตอนที่ต้องใช้จริง ────────
+// ลด bundle size ~280KB ที่โหลดตอนเปิดหน้าแรก
+let ReactMarkdown: any = null;
+let remarkMathPlugin: any = null;
+let rehypeKatexPlugin: any = null;
+let katexLoaded = false;
+
+async function loadMarkdownLibs() {
+  if (katexLoaded) return;
+  const [md, rm, rk] = await Promise.all([
+    import("react-markdown"),
+    import("remark-math"),
+    import("rehype-katex"),
+  ]);
+  // โหลด KaTeX CSS
+  if (!document.getElementById("katex-css")) {
+    const link = document.createElement("link");
+    link.id   = "katex-css";
+    link.rel  = "stylesheet";
+    link.href = "https://cdn.jsdelivr.net/npm/katex@0.16.9/dist/katex.min.css";
+    document.head.appendChild(link);
+  }
+  ReactMarkdown      = md.default;
+  remarkMathPlugin   = rm.default;
+  rehypeKatexPlugin  = rk.default;
+  katexLoaded = true;
+}
 
 // ============================================================
-// MARKDOWN RENDERER — ไม่ต้องติดตั้ง library เพิ่ม
-// รองรับ: **bold**, *italic*, `code`, ~~strikethrough~~, \n
+// MARKDOWN RENDERER — Lazy load KaTeX เฉพาะตอนใช้จริง
 // ============================================================
-// ✅ เปลี่ยนเป็นอันนี้ (แสดงสมการและ Markdown ได้สมบูรณ์)
 const MdText = React.memo(function MdText({
   children,
   style = {},
@@ -16,14 +38,26 @@ const MdText = React.memo(function MdText({
   children?: React.ReactNode;
   style?: React.CSSProperties;
 }) {
+  const [ready, setReady] = useState(katexLoaded);
+
+  useEffect(() => {
+    if (!katexLoaded) {
+      loadMarkdownLibs().then(() => setReady(true));
+    }
+  }, []);
+
   if (!children) return null;
+  if (!ready || !ReactMarkdown) {
+    // fallback ก่อน KaTeX โหลดเสร็จ
+    return <span style={{ display: "inline-block", ...style }}>{String(children)}</span>;
+  }
   return (
     <span style={{ display: "inline-block", ...style }}>
       <ReactMarkdown
-        remarkPlugins={[remarkMath]}
-        rehypePlugins={[rehypeKatex]}
+        remarkPlugins={[remarkMathPlugin]}
+        rehypePlugins={[rehypeKatexPlugin]}
         components={{
-          p: ({ node, ...props }) => <span {...props} />,
+          p: ({ node, ...props }: any) => <span {...props} />,
         }}
       >
         {String(children)}
@@ -33,7 +67,7 @@ const MdText = React.memo(function MdText({
 });
 
 // โจทย์ข้อความ (ใช้ MdText)
-function QuestionText({ text }) {
+function QuestionText({ text }: { text?: string }) {
   if (!text) return null;
   return (
     <p style={{color:"#f5e6c8",fontFamily:"'Sarabun',sans-serif",fontSize:"18px",
@@ -45,8 +79,12 @@ function QuestionText({ text }) {
 
 // ============================================================
 
-const APPS_SCRIPT_URL =
-  "https://script.google.com/macros/s/AKfycbzTTMBPvbsZckZgmQz274CBFDD1DYisym4T1Eh_CbvkzV-iDdfvXZzwrT2OSRQo4NPvhw/exec";
+// ============================================================
+// เรียกผ่าน Vercel Cache Proxy (/api/proxy) เป็นหลัก โดยมี fallback
+// ยิงตรงไป Apps Script อัตโนมัติถ้า proxy ใช้งานไม่ได้ (ดูด้านล่าง
+// ที่ PROXY_URL / DIRECT_SCRIPT_URL / currentBaseUrl())
+// ============================================================
+
 
 const LOOKER_STUDIO_URL =
   "https://datastudio.google.com/reporting/966d1ffe-4e23-4ce7-a8de-13b65038e2f8";
@@ -65,16 +103,110 @@ function getModeFromUrl() {
   catch { return "normal"; }
 }
 
+// ============================================================
+// API — เพิ่ม Timeout + Retry + Fallback เพื่อความ "เข้าถึงได้เสมอ"
+// ============================================================
+// หลักการ: ช้าได้ แต่ห้ามค้างแบบไม่มีทางออก
+// - GET: retry ได้หลายครั้งเสมอ (read-only ไม่มีผลข้างเคียง)
+// - POST: retry เฉพาะตอน network error ก่อนถึง Server เท่านั้น
+//   ไม่ retry ตอน timeout เพราะไม่รู้ว่าคำสั่งไปถึง Server แล้วหรือยัง
+//   (กันบันทึกผลซ้ำ / หักเงินซ้ำ / ตีบอสซ้ำ)
+// - ถ้า Vercel Proxy (/api/proxy) พังหลายครั้งติดกัน จะสลับไปยิง
+//   Apps Script ตรงๆ อัตโนมัติ (ไม่ผ่าน cache) เพื่อให้ยังใช้งานได้
+const PROXY_URL         = "/api/proxy";
+const DIRECT_SCRIPT_URL = "https://script.google.com/macros/s/AKfycbzTTMBPvbsZckZgmQz274CBFDD1DYisym4T1Eh_CbvkzV-iDdfvXZzwrT2OSRQo4NPvhw/exec";
+const REQUEST_TIMEOUT_MS = 20000; // ใจเย็นขึ้นกว่าเดิม ยอมรอนานขึ้นแลกกับโอกาสสำเร็จสูงขึ้น
+
+let useDirectFallback = false;  // สลับเป็น true ถ้า proxy พังซ้ำๆ
+let proxyFailCount     = 0;
+const PROXY_FAIL_THRESHOLD = 3; // proxy พังติดกันกี่ครั้งถึงจะเลิกใช้ proxy
+
+function currentBaseUrl() {
+  return useDirectFallback ? DIRECT_SCRIPT_URL : PROXY_URL;
+}
+function noteProxyFailure() {
+  if (useDirectFallback) return;
+  proxyFailCount++;
+  if (proxyFailCount >= PROXY_FAIL_THRESHOLD) {
+    useDirectFallback = true;
+    console.warn("Proxy ล้มเหลวซ้ำ — สลับไปยิง Apps Script ตรงแทน");
+  }
+}
+function noteProxySuccess() {
+  proxyFailCount = 0;
+}
+
+function sleep(ms) { return new Promise(r => setTimeout(r, ms)); }
+
+// backoff แบบสุ่มเวลาเล็กน้อย (jitter) กันหลายเครื่อง retry พร้อมกันเป๊ะ
+function backoffDelay(attempt) {
+  const base = 700 * (attempt + 1);
+  const jitter = Math.random() * 400;
+  return base + jitter;
+}
+
+// ดึง+parse JSON ทั้งก้อน อยู่ "ใน" การ retry ด้วย เผื่อ response
+// เพี้ยน (เช่น Apps Script คืน HTML error page แทน JSON) ก็ยัง retry ได้
+async function fetchJsonWithRetry(url, options, { retries = 3, retryOnTimeout = true, isRead = true } = {}) {
+  let lastErr;
+  for (let attempt = 0; attempt <= retries; attempt++) {
+    const controller = new AbortController();
+    const timer = setTimeout(() => controller.abort(), REQUEST_TIMEOUT_MS);
+    try {
+      const res = await fetch(url, { ...options, signal: controller.signal });
+      clearTimeout(timer);
+      if (!res.ok) throw new Error(`HTTP ${res.status}`);
+      const text = await res.text();
+      const data = JSON.parse(text); // ถ้า response เพี้ยน (ไม่ใช่ JSON) จะ throw แล้วเข้า retry ต่อ
+      if (isRead) noteProxySuccess();
+      return data;
+    } catch (err: any) {
+      clearTimeout(timer);
+      const isTimeout = err?.name === "AbortError";
+      lastErr = err;
+      if (isRead && !useDirectFallback) noteProxyFailure();
+      const canRetry = attempt < retries && (retryOnTimeout || !isTimeout);
+      if (!canRetry) throw err;
+      await sleep(backoffDelay(attempt));
+    }
+  }
+  throw lastErr;
+}
+
 async function apiGet(params) {
   const query = new URLSearchParams(
     Object.entries(params).reduce((acc,[k,v])=>{ acc[k]=String(v); return acc; },{})
   );
-  const res = await fetch(`${APPS_SCRIPT_URL}?${query}`);
-  return res.json();
+  try {
+    return await fetchJsonWithRetry(`${currentBaseUrl()}?${query}`, { method:"GET" },
+      { retries: 3, retryOnTimeout: true, isRead: true });
+  } catch (err) {
+    // ✅ ทางสุดท้าย: ถ้าใช้ proxy อยู่และล้มเหลวหมดแล้ว ลองยิงตรงอีกรอบเดียว
+    // ก่อนจะยอมแพ้จริงๆ (เผื่อ proxy พังแต่ Apps Script ยังปกติ)
+    if (!useDirectFallback) {
+      try {
+        const data = await fetchJsonWithRetry(`${DIRECT_SCRIPT_URL}?${query}`, { method:"GET" },
+          { retries: 1, retryOnTimeout: true, isRead: false });
+        return data;
+      } catch { /* ตกไป throw err เดิมด้านล่าง */ }
+    }
+    throw err;
+  }
 }
 async function apiPost(body) {
-  const res = await fetch(APPS_SCRIPT_URL, { method:"POST", body:JSON.stringify(body) });
-  return res.json();
+  try {
+    return await fetchJsonWithRetry(currentBaseUrl(), { method:"POST", body:JSON.stringify(body) },
+      { retries: 1, retryOnTimeout: false, isRead: false });
+  } catch (err) {
+    // POST ก็ยอม fallback ไปยิงตรงได้เช่นกันถ้า proxy เจ๊งจริงๆ (ยังไม่ retry ซ้ำที่ timeout เหมือนเดิม)
+    if (!useDirectFallback && currentBaseUrl() !== DIRECT_SCRIPT_URL) {
+      try {
+        return await fetchJsonWithRetry(DIRECT_SCRIPT_URL, { method:"POST", body:JSON.stringify(body) },
+          { retries: 0, retryOnTimeout: false, isRead: false });
+      } catch { /* ตกไป throw err เดิมด้านล่าง */ }
+    }
+    throw err;
+  }
 }
 
 function shuffle(arr) {
@@ -129,7 +261,7 @@ function pickChallengeQuestion(pool, usedIds) {
   return available[Math.floor(Math.random()*available.length)];
 }
 
-function Particles({ color }) {
+const Particles = React.memo(function Particles({ color }: { color: string }) {
   const pts=useRef([...Array(18)].map(()=>({
     w:Math.random()*2.5+0.5,l:Math.random()*100,t:Math.random()*100,
     d:Math.random()*8+6,delay:Math.random()*6,
@@ -143,9 +275,9 @@ function Particles({ color }) {
       ))}
     </div>
   );
-}
+});
 
-function TimerBar({ timeLeft, totalTime, color }) {
+const TimerBar = React.memo(function TimerBar({ timeLeft, totalTime, color }: { timeLeft: number; totalTime: number; color: string }) {
   const pct=(timeLeft/totalTime)*100;
   const c=pct>50?color:pct>20?"#e67e22":"#e74c3c";
   return (
@@ -154,9 +286,9 @@ function TimerBar({ timeLeft, totalTime, color }) {
         transition:"width 1s linear,background .5s",boxShadow:`0 0 6px ${c}`}}/>
     </div>
   );
-}
+});
 
-function Spinner({ color }) {
+const Spinner = React.memo(function Spinner({ color }: { color: string }) {
   return (
     <div style={{textAlign:"center",padding:"40px 0"}}>
       <div style={{width:"36px",height:"36px",borderRadius:"50%",margin:"0 auto 14px",
@@ -164,9 +296,9 @@ function Spinner({ color }) {
       <p style={{color:"#8b7355",fontFamily:"'Cinzel',serif",fontSize:"12px"}}>กำลังโหลด...</p>
     </div>
   );
-}
+});
 
-function PointsBadge({ points, tc }) {
+const PointsBadge = React.memo(function PointsBadge({ points, tc }: any) {
   if(!points||points===1) return null;
   return (
     <span style={{background:`linear-gradient(135deg,${tc}33,${tc}11)`,border:`1px solid ${tc}66`,
@@ -175,7 +307,7 @@ function PointsBadge({ points, tc }) {
       ★ {points} คะแนน
     </span>
   );
-}
+});
 
 function CharacterPopup({ charData, status, onClose, tc }) {
   const [visible,setVisible]=useState(false);
@@ -228,8 +360,7 @@ function CharacterPopup({ charData, status, onClose, tc }) {
     </div>
   );
 }
-
-function LifeHearts({ total, remaining }) {
+const LifeHearts = React.memo(function LifeHearts({ total, remaining }: { total: number; remaining: number }) {
   return (
     <div style={{display:"flex",gap:"3px",alignItems:"center"}}>
       {[...Array(total)].map((_,i)=>(
@@ -240,9 +371,17 @@ function LifeHearts({ total, remaining }) {
       ))}
     </div>
   );
-}
+});
 
-function ChallengeLogo({ logoImageUrl, logoEmoji, size=52 }) {
+const ChallengeLogo = React.memo(function ChallengeLogo({ 
+  logoImageUrl, 
+  logoEmoji, 
+  size = 52 
+}: { 
+  logoImageUrl?: string; 
+  logoEmoji?: string; 
+  size?: number; 
+}) {
   if (logoImageUrl) {
     return (
       <div style={{width:size+"px",height:size+"px",borderRadius:"50%",overflow:"hidden",
@@ -255,12 +394,16 @@ function ChallengeLogo({ logoImageUrl, logoEmoji, size=52 }) {
     );
   }
   return <div style={{fontSize:size+"px",textAlign:"center",lineHeight:1}}>{logoEmoji||"⚡"}</div>;
-}
+});
 
 function SetSelectScreen({ quizSets, onSelect, theme }: any) {
-  const [search,setSearch]=useState("");
-  const filtered = quizSets.filter((s: any) => s.name.includes(search) || s.id.includes(search));
-  const tc=theme.themeColor;
+  const [search, setSearch] = useState("");
+  const isLoading = quizSets.length === 0;
+  const filtered = quizSets.filter((s: any) =>
+    s.name.includes(search) || s.id.includes(search)
+  );
+  const tc = theme.themeColor;
+
   return (
     <div style={{minHeight:"100vh",display:"flex",alignItems:"center",justifyContent:"center",padding:"20px"}}>
       <div style={{maxWidth:"560px",width:"100%",
@@ -271,28 +414,70 @@ function SetSelectScreen({ quizSets, onSelect, theme }: any) {
           <div style={{fontSize:"44px",marginBottom:"8px"}}>{theme.logoEmoji}</div>
           <h1 style={{fontFamily:"'Cinzel Decorative',serif",color:tc,fontSize:theme.fontSize,
             margin:"0 0 4px",textShadow:`0 0 20px ${tc}44`}}>ลุยโจทย์</h1>
-          <p style={{color:"#8b7355",fontFamily:"'Cinzel',serif",fontSize:"11px",margin:0}}>Admin — เลือกชุดข้อสอบ</p>
+          <p style={{color:"#8b7355",fontFamily:"'Cinzel',serif",fontSize:"11px",margin:0}}>
+            Admin — เลือกชุดข้อสอบ
+          </p>
         </div>
-        <input value={search} onChange={e=>setSearch(e.target.value)} placeholder="🔍 ค้นหา..."
-          style={{width:"100%",boxSizing:"border-box",background:`${tc}11`,border:`1px solid ${tc}44`,
-            borderRadius:"8px",padding:"10px 14px",color:"#f5e6c8",
-            fontFamily:"'Sarabun',sans-serif",fontSize:"15px",outline:"none",marginBottom:"14px"}}/>
-        
-        {filtered.length === 0 ? (
-          <Spinner color={tc}/>
+
+        {/* Search bar — แสดงทันที */}
+        <input value={search} onChange={e=>setSearch(e.target.value)}
+          placeholder="🔍 ค้นหา..." disabled={isLoading}
+          style={{width:"100%",boxSizing:"border-box",background:`${tc}11`,
+            border:`1px solid ${tc}44`,borderRadius:"8px",padding:"10px 14px",
+            color:"#f5e6c8",fontFamily:"'Sarabun',sans-serif",fontSize:"15px",
+            outline:"none",marginBottom:"14px",
+            opacity:isLoading?0.5:1}}/>
+
+        {/* Skeleton loading ขณะรอ API */}
+        {isLoading ? (
+          <div style={{display:"flex",flexDirection:"column",gap:"8px"}}>
+            {[...Array(6)].map((_,i)=>(
+              <div key={i} style={{
+                background:`${tc}06`,border:`1px solid ${tc}22`,
+                borderRadius:"10px",padding:"13px 16px",
+                animation:`skeletonPulse 1.5s ease-in-out ${i*0.1}s infinite`,
+              }}>
+                {/* ชื่อชุดข้อสอบ */}
+                <div style={{height:"16px",width:`${70+Math.random()*20}%`,
+                  background:`${tc}22`,borderRadius:"4px",marginBottom:"8px"}}/>
+                {/* รายละเอียด */}
+                <div style={{height:"11px",width:"50%",
+                  background:`${tc}11`,borderRadius:"4px",marginBottom:"6px"}}/>
+                {/* URL */}
+                <div style={{height:"10px",width:"30%",
+                  background:"rgba(58,106,58,.2)",borderRadius:"4px"}}/>
+              </div>
+            ))}
+            <p style={{textAlign:"center",color:"#6b5a3e",fontSize:"12px",
+              fontFamily:"'Cinzel',serif",marginTop:"8px"}}>
+              กำลังโหลดชุดข้อสอบ...
+            </p>
+          </div>
+        ) : filtered.length === 0 ? (
+          <p style={{textAlign:"center",color:"#6b5a3e",fontFamily:"'Cinzel',serif",
+            fontSize:"13px",padding:"20px 0"}}>
+            ไม่พบชุดข้อสอบที่ค้นหา
+          </p>
         ) : (
-          <div style={{display:"flex",flexDirection:"column",gap:"8px",maxHeight:"400px",overflowY:"auto"}}>
-            {filtered.map((set: any)=>(
+          <div style={{display:"flex",flexDirection:"column",gap:"8px",
+            maxHeight:"400px",overflowY:"auto"}}>
+            {filtered.map((set: any) => (
               <button key={set.id} onClick={()=>onSelect(set)} style={{
                 background:`${tc}08`,border:`1px solid ${tc}33`,borderRadius:"10px",
                 padding:"13px 16px",cursor:"pointer",textAlign:"left",
-                display:"flex",justifyContent:"space-between",alignItems:"center",transition:"all .2s"}}>
+                display:"flex",justifyContent:"space-between",alignItems:"center",
+                transition:"all .2s"}}>
                 <div>
-                  <div style={{color:"#f5e6c8",fontFamily:"'Sarabun',sans-serif",fontSize:"15px",fontWeight:600}}>{set.name}</div>
-                  <div style={{color:"#6b5a3e",fontSize:"12px",fontFamily:"'Cinzel',serif",marginTop:"2px"}}>
+                  <div style={{color:"#f5e6c8",fontFamily:"'Sarabun',sans-serif",
+                    fontSize:"15px",fontWeight:600}}>{set.name}</div>
+                  <div style={{color:"#6b5a3e",fontSize:"12px",
+                    fontFamily:"'Cinzel',serif",marginTop:"2px"}}>
                     {set.id} · {set.total}ข้อ · {set.timeLimit/60}นาที · ผ่าน {set.passingScore} คะแนน
                   </div>
-                  <div style={{color:"#3a6a3a",fontSize:"11px",fontFamily:"'Courier New',monospace",marginTop:"3px"}}>?set={set.id}</div>
+                  <div style={{color:"#3a6a3a",fontSize:"11px",
+                    fontFamily:"'Courier New',monospace",marginTop:"3px"}}>
+                    ?set={set.id}
+                  </div>
                 </div>
                 <span style={{color:tc,fontSize:"22px"}}>›</span>
               </button>
@@ -314,6 +499,7 @@ function LoginScreen({
   challengeLabel,
   cachedConfig, 
   prefetchedQuestionsRef, 
+  playerStatsPrefetchRef,
   apiGet,
   onConfirm,
   onBack
@@ -356,6 +542,13 @@ const lookup=async()=>{
           prefetchedQuestionsRef.current = results;
         }).catch(() => {});
       }
+      // ⚡ Boss/Challenge mode: prefetch playerStats ทันทีที่รู้ studentId
+      // (bundle ชุดคำถาม/บอส/config เริ่มโหลดไปตั้งแต่เปิดหน้านี้แล้ว)
+      if (isChallenge && playerStatsPrefetchRef) {
+        playerStatsPrefetchRef.current = apiGet({
+          action: "getPlayerStats", studentId: data.student.id,
+        }).catch(() => null);
+      }
     }
   } catch { 
     setError("เชื่อมต่อระบบไม่ได้ กรุณาลองใหม่"); 
@@ -376,10 +569,27 @@ const lookup=async()=>{
         )}
         <div style={{textAlign:"center",marginBottom:"24px"}}>
           <div style={{marginBottom:"10px"}}>
-            {isChallenge
-              ? <ChallengeLogo logoImageUrl={challengeConfig?.logoImageUrl||""} logoEmoji={challengeConfig?.logoEmoji||"⚡"} size={52}/>
-              : <div style={{fontSize:"44px",lineHeight:1}}>{theme.logoEmoji}</div>
-            }
+            {isChallenge ? (
+              // ถ้า theme มี logoImageUrl (รูป Boss) → แสดงรูปใหญ่
+              theme.logoImageUrl ? (
+                <div style={{margin:"0 auto",width:"180px",height:"180px",
+                  borderRadius:"16px",overflow:"hidden",
+                  border:"2px solid rgba(231,76,60,.5)",
+                  boxShadow:"0 0 30px rgba(231,76,60,.4)",
+                  background:"rgba(0,0,0,0.3)"}}>
+                  <img src={theme.logoImageUrl} alt="boss"
+                    style={{width:"100%",height:"100%",objectFit:"cover",display:"block"}}
+                    onError={(e: any) => e.currentTarget.style.display = "none"}/>
+                </div>
+              ) : (
+                <ChallengeLogo
+                  logoImageUrl={challengeConfig?.logoImageUrl || ""}
+                  logoEmoji={challengeConfig?.logoEmoji || theme.logoEmoji || "⚡"}
+                  size={52}/>
+              )
+            ) : (
+              <div style={{fontSize:"44px",lineHeight:1}}>{theme.logoEmoji}</div>
+            )}
           </div>
           <h1 style={{fontFamily:"'Cinzel Decorative',serif",
             color:isChallenge?"#e74c3c":tc,fontSize:theme.fontSize,
@@ -500,7 +710,7 @@ const NavButton = React.memo(function NavButton({ index, isActive, isAnswered, p
   );
 });
 
-function TextInput({ value, onChange, tc, disabled=false }) {
+function TextInput({ value, onChange, tc, disabled = false }: any) {
   // 1. เก็บค่าที่กำลังพิมพ์ไว้ใน Local state
   const [localValue, setLocalValue] = useState(value || "");
 
@@ -559,16 +769,16 @@ function TextInput({ value, onChange, tc, disabled=false }) {
 }
 
 // ── โจทย์กล่อง — ใช้ QuestionText (รองรับ Markdown) ────────
-function QuestionBox({ q, current, tc }) {
+const QuestionBox = React.memo(function QuestionBox({ q, current, tc }: any) {
   return (
     <div style={{background:`${tc}08`,border:`1px solid ${tc}22`,borderRadius:"12px",
       padding:"10px",marginBottom:"16px",minHeight:"180px",
       display:"flex",alignItems:"center",justifyContent:"center"}}>
       {q.imageUrl ? (
         <img src={q.imageUrl} alt="โจทย์"
+          loading="lazy" decoding="async"
           style={{width:"100%",maxHeight:"400px",objectFit:"contain",borderRadius:"8px",display:"block"}}/>
       ) : q.setText ? (
-        // ✅ โจทย์ข้อความรองรับ Markdown
         <QuestionText text={q.setText}/>
       ) : (
         <p style={{color:"#8b7355",fontFamily:"'Cinzel',serif",fontSize:"13px",textAlign:"center",margin:0}}>
@@ -577,11 +787,11 @@ function QuestionBox({ q, current, tc }) {
       )}
     </div>
   );
-}
+});
 
 // ── เฉลย — ใช้ MdText ────────────────────────────────────
 // ── เฉลย — รองรับ solutionText + links ──────────────────
-function AnswerRow({ r, i, tc }) {
+function AnswerRow({ r, i, tc }: any) {
   const pts = r.question.points ?? 1;
   let correctText, selectedText;
   if (r.question.questionType === "text") {
@@ -686,7 +896,7 @@ const TimerDisplay = React.memo(({ initialTime, tc, onTimeUp }: any) => {
   );
 });
 
-function QuizScreen({ set, student, questions, onFinish, theme }) {
+function QuizScreen({ set, student, questions, onFinish, theme }: any) {
   const [current,setCurrent]=useState(0);
   const [answers,setAnswers]=useState({});
   
@@ -823,7 +1033,7 @@ function QuizScreen({ set, student, questions, onFinish, theme }) {
   );
 }
 
-function ResultScreen({ data, onRetry, onHome, isDirectLink, theme }) {
+function ResultScreen({ data, onRetry, onHome, isDirectLink, theme }: any) {
   const {results,timeUsed,timeUp,student,set,maxScore}=data;
   const totalScore=calcTotalScore(results);
   const passed=totalScore>=set.passingScore;
@@ -988,75 +1198,268 @@ function ResultScreen({ data, onRetry, onHome, isDirectLink, theme }) {
   );
 }
 
-function ChallengeScreen({ challengeConfig, student, pool, onFinish, theme }) {
-  const { maxQuestions, lives: maxLives, challengeName } = challengeConfig;
-  const tc = theme.themeColor;
+// ── Boss UI Components ────────────────────────────────────
+const HPBar = React.memo(function HPBar({ current, max, label = "", color = "#e74c3c", height = 12, showNumbers = true }: any) {
+  const pct = max > 0 ? Math.max(0, Math.min(100, (current / max) * 100)) : 0;
+  const c   = color === "auto" ? (pct > 50 ? "#e74c3c" : pct > 25 ? "#e67e22" : "#c0392b") : color;
+  return (
+    <div style={{ width: "100%" }}>
+      {(label || showNumbers) && (
+        <div style={{ display: "flex", justifyContent: "space-between", marginBottom: "4px" }}>
+          {label && <span style={{ color: "#a08070", fontSize: "11px", fontFamily: "'Cinzel',serif" }}>{label}</span>}
+          {showNumbers && <span style={{ color: c, fontSize: "11px", fontFamily: "'Cinzel',serif", fontWeight: 700 }}>
+            {Number(current).toLocaleString()} / {Number(max).toLocaleString()}
+          </span>}
+        </div>
+      )}
+      <div style={{ width: "100%", height: height + "px", background: "rgba(0,0,0,0.5)",
+        borderRadius: "4px", overflow: "hidden", border: "1px solid rgba(255,255,255,0.08)" }}>
+        <div style={{ height: "100%", width: pct + "%",
+          background: `linear-gradient(90deg,${c}cc,${c})`,
+          borderRadius: "4px", transition: "width 0.5s ease",
+          boxShadow: `0 0 8px ${c}88` }} />
+      </div>
+    </div>
+  );
+});
+
+const TimerRing = React.memo(function TimerRing({ timeLeft, totalTime }: any) {
+  const pct   = totalTime > 0 ? timeLeft / totalTime : 0;
+  const r     = 22;
+  const circ  = 2 * Math.PI * r;
+  const color = timeLeft < 30 ? "#e74c3c" : timeLeft < 60 ? "#e67e22" : "#d4af37";
+  return (
+    <div style={{ position: "relative", width: "56px", height: "56px", flexShrink: 0 }}>
+      <svg width="56" height="56" style={{ transform: "rotate(-90deg)" }}>
+        <circle cx="28" cy="28" r={r} fill="none" stroke="rgba(255,255,255,0.08)" strokeWidth="4" />
+        <circle cx="28" cy="28" r={r} fill="none" stroke={color} strokeWidth="4"
+          strokeDasharray={circ} strokeDashoffset={circ * (1 - pct)}
+          style={{ transition: "stroke-dashoffset 1s linear, stroke 0.3s",
+            filter: `drop-shadow(0 0 4px ${color})` }} />
+      </svg>
+      <div style={{ position: "absolute", inset: 0, display: "flex", alignItems: "center", justifyContent: "center" }}>
+        <span style={{ fontFamily: "'Courier New',monospace", fontSize: "11px", fontWeight: 700, color,
+          textShadow: timeLeft < 30 ? `0 0 8px ${color}` : "none" }}>
+          {formatTime(timeLeft)}
+        </span>
+      </div>
+    </div>
+  );
+});
+
+function DamageFlash({ damage, penetrated }: any) {
+  return (
+    <div style={{ position: "fixed", top: "38%", left: "50%", transform: "translateX(-50%)",
+      zIndex: 999, pointerEvents: "none", animation: "dmgFloat 1.4s ease-out forwards", textAlign: "center" }}>
+      {penetrated ? (
+        <>
+          <div style={{ fontFamily: "'Cinzel Decorative',serif", fontSize: "44px", fontWeight: 900,
+            color: "#e74c3c", textShadow: "0 0 30px rgba(231,76,60,0.9)" }}>-{damage}</div>
+          <div style={{ color: "#ff6b35", fontSize: "13px", fontFamily: "'Cinzel',serif", marginTop: "4px" }}>
+            ⚔️ เจาะเกราะ!
+          </div>
+        </>
+      ) : (
+        <>
+          <div style={{ fontFamily: "'Cinzel Decorative',serif", fontSize: "30px", fontWeight: 900, color: "#6b5a3e" }}>
+            BLOCKED
+          </div>
+          <div style={{ color: "#8b7355", fontSize: "12px", fontFamily: "'Cinzel',serif", marginTop: "4px" }}>
+            🛡️ เกราะกันไว้!
+          </div>
+        </>
+      )}
+    </div>
+  );
+}
+
+// ── ChallengeScreen (รองรับ Boss Mode) ───────────────────
+function ChallengeScreen({ challengeConfig, student, pool, onFinish, theme, boss = null, playerStats = null }: any) {
+  const { maxQuestions, challengeName } = challengeConfig;
+  // ใช้ HP จริงจาก playerStats แทน challengeLives
+  const maxLives = playerStats?.effective?.hp ?? (challengeConfig.lives ?? 1);
+  const tc     = theme.themeColor;
   const ACCENT = "#e74c3c";
-  const [current, setCurrent] = useState(null);
+  const isBoss = !!boss; // Boss mode ถ้ามี boss ส่งมา
+
+  // เวลาต่อข้อ: Boss mode = 180 วิ + SPD*20, ปกติ = ไม่มี timer
+  const timePerQ = isBoss ? 180 + ((playerStats?.effective?.spd ?? 1) - 1) * 20 : 0;
+
+  const [current,         setCurrent]         = useState(null);
   const [shuffledChoices, setShuffledChoices] = useState([]);
-  const [selected, setSelected] = useState(null);
-  const [textVal, setTextVal] = useState("");
-  const [phase, setPhase] = useState("question");
-  const [lives, setLives] = useState(maxLives);
-  const [streak, setStreak] = useState(0);
-  const [score, setScore] = useState(0);
-  const [questionNum, setQuestionNum] = useState(0);
-  const [history, setHistory] = useState([]);
-  const usedIds = useRef(new Set());
-  const [shakeHeart, setShakeHeart] = useState(false);
-  const scoreRef = useRef(0);
-  const livesRef = useRef(maxLives);
-  const historyRef = useRef([]);
+  const [selected,        setSelected]        = useState(null);
+  const [textVal,         setTextVal]         = useState("");
+  const [phase,           setPhase]           = useState("question");
+  const [lives,           setLives]           = useState(maxLives);
+  const [streak,          setStreak]          = useState(0);
+  const [score,           setScore]           = useState(0);
+  const [questionNum,     setQuestionNum]     = useState(0);
+  const [history,         setHistory]         = useState([]);
+  const [shakeHeart,      setShakeHeart]      = useState(false);
+  const [bossHp,          setBossHp]          = useState(boss?.hpCurrent ?? 0);
+  const [dmgFlash,        setDmgFlash]        = useState<any>(null);
+  const [timeLeft,        setTimeLeft]        = useState(timePerQ);
+
+  const usedIds    = useRef(new Set());
+  const scoreRef   = useRef(0);
+  const livesRef   = useRef(maxLives);
+  const historyRef = useRef<any[]>([]);
+  const bossHpRef  = useRef(boss?.hpCurrent ?? 0);
+  const timerRef   = useRef<any>(null);
+
+  // ── Timer ต่อข้อ (Boss mode เท่านั้น) ──────────────────
+  useEffect(() => {
+    if (!isBoss || phase !== "question" || !current) return;
+    setTimeLeft(timePerQ);
+    clearInterval(timerRef.current);
+    timerRef.current = setInterval(() => {
+      setTimeLeft((t: number) => {
+        if (t <= 1) { clearInterval(timerRef.current); submitAnswer(true); return 0; }
+        return t - 1;
+      });
+    }, 1000);
+    return () => clearInterval(timerRef.current);
+  }, [current, phase]);
 
   useEffect(()=>{ loadNext(0, maxLives, []); },[]);
 
-  function loadNext(currentNum, currentLives, currentHistory) {
+  // ── helper: คำนวณ damage รวม session แล้วส่งครั้งเดียว ──
+  function saveFinalBossDamage(finalHistory: any[]) {
+    if (!isBoss || !boss) return;
+    const correctCount = finalHistory.filter(h => h.isCorrect).length;
+    const atk          = playerStats?.effective?.atk ?? 1;
+    const totalDmg     = correctCount + atk; // ← สูตร: ข้อถูก + ATK
+    const pen          = totalDmg > (boss.def ?? 0);
+    if (!pen) return; // ตีไม่เข้าเกราะ ไม่บันทึก
+
+    const newBossHp = Math.max(0, bossHpRef.current - totalDmg);
+    bossHpRef.current = newBossHp;
+    setBossHp(newBossHp);
+
+    // ⚡ กันบันทึกซ้ำถ้า retry logic ยิงซ้ำ (เช่น response หลุดหลังจาก
+    // Server ประมวลผลสำเร็จไปแล้ว) — สร้างรหัสไม่ซ้ำกันต่อ session
+    // ให้ Server เช็คก่อนว่าเคยเห็นรหัสนี้แล้วหรือยัง
+    const attemptId = `${student.id}_${boss.name}_${Date.now()}_${Math.random().toString(36).slice(2,8)}`;
+
+    apiPost({
+      action:    "saveBossDamage",
+      bossName:  boss.name,
+      studentId: student.id,
+      nickname:  student.nickname,
+      damage:    totalDmg,
+      questionId: "session",
+      setName:   "session",
+      attemptId,
+    }).catch(() => {});
+
+    return { totalDmg, pen, newBossHp };
+  }
+
+  function loadNext(currentNum: number, currentLives: number, currentHistory: any[]) {
     const q = pickChallengeQuestion(pool, usedIds.current);
-    if(!q || (maxQuestions>0 && currentNum>=maxQuestions)) {
-      onFinish({ history:currentHistory, score:scoreRef.current, lives:currentLives, livesMax:maxLives, reason:"complete", student, challengeConfig });
+    if (!q || (maxQuestions > 0 && currentNum >= maxQuestions)) {
+      // จบ session → ส่ง damage ครั้งเดียว
+      const dmgResult = saveFinalBossDamage(currentHistory);
+      const finalBossHp     = dmgResult?.newBossHp ?? bossHpRef.current;
+      const finalBossDefeated = isBoss && finalBossHp <= 0;
+      onFinish({
+        history: currentHistory, score: scoreRef.current,
+        lives: currentLives, livesMax: maxLives,
+        reason: finalBossDefeated ? "bossDefeated" : "complete",
+        student, challengeConfig,
+        bossHpFinal: finalBossHp,
+        bossDefeated: finalBossDefeated,
+        totalBossDmg: dmgResult?.totalDmg ?? 0,
+      });
       return;
     }
     usedIds.current.add(q.id);
     setCurrent(q);
-    setShuffledChoices(q.questionType==="text"?[]:shuffle(q.choices.map((c,i)=>({text:c,origIndex:i}))));
-    setSelected(null); setTextVal(""); setPhase("question");
+    setShuffledChoices(q.questionType === "text" ? [] : shuffle(q.choices.map((c: any, i: number) => ({ text: c, origIndex: i }))));
+    setSelected(null); setTextVal(""); setPhase("question"); setDmgFlash(null);
   }
 
-  function submitAnswer() {
-    if(!current) return;
-    let isCorrect=false, selectedOrigIndex=null;
-    if(current.questionType==="text"){
-      if(textVal.trim()==="") return;
-      isCorrect=checkTextAnswer(textVal, current.correctTextAnswer);
-    } else {
-      if(selected===null) return;
-      selectedOrigIndex=shuffledChoices[selected].origIndex;
-      isCorrect=selectedOrigIndex===current.answer;
+  function submitAnswer(timeUp = false) {
+    if (!current) return;
+    clearInterval(timerRef.current);
+
+    let isCorrect = false, selectedOrigIndex: number | null = null;
+    if (!timeUp) {
+      if (current.questionType === "text") {
+        if (textVal.trim() === "") return;
+        isCorrect = checkTextAnswer(textVal, current.correctTextAnswer);
+      } else {
+        if (selected === null) return;
+        selectedOrigIndex = shuffledChoices[selected].origIndex;
+        isCorrect = selectedOrigIndex === current.answer;
+      }
     }
-    const pts=current.points??1;
-    const newEntry={ question:current, isCorrect, selectedOrigIndex, userTextAnswer:textVal,
-      shuffledChoices:[...shuffledChoices], questionNumber:questionNum+1 };
-    const newHistory=[...historyRef.current, newEntry];
-    historyRef.current=newHistory;
+
+    const pts = isCorrect ? (current.points ?? 1) : 0;
+
+    // preview damage flash (แค่แสดงผล ไม่บันทึก Sheet)
+    if (isBoss && isCorrect) {
+      const correctSoFar = historyRef.current.filter(h => h.isCorrect).length + 1;
+      const atk = playerStats?.effective?.atk ?? 1;
+      const previewDmg = correctSoFar + atk;
+      const pen = previewDmg > (boss.def ?? 0);
+      setDmgFlash({ damage: pen ? previewDmg : 0, penetrated: pen });
+    }
+
+    const newEntry = {
+      question: current, isCorrect, selectedOrigIndex,
+      userTextAnswer: textVal, shuffledChoices: [...shuffledChoices],
+      questionNumber: questionNum + 1,
+    };
+    const newHistory = [...historyRef.current, newEntry];
+    historyRef.current = newHistory;
     setHistory(newHistory);
-    setQuestionNum(n=>n+1);
-    if(isCorrect){
-      scoreRef.current+=pts; setScore(s=>s+pts); setStreak(s=>s+1); setPhase("reveal_correct");
-      const nextNum=questionNum+1;
-      setTimeout(()=>{
-        if(maxQuestions>0&&nextNum>=maxQuestions){
-          onFinish({history:newHistory,score:scoreRef.current,lives:livesRef.current,livesMax:maxLives,reason:"complete",student,challengeConfig});
+    setQuestionNum((n: number) => n + 1);
+
+    if (isCorrect) {
+      scoreRef.current += pts; setScore((s: number) => s + pts); setStreak((s: number) => s + 1);
+      setPhase("reveal_correct");
+      const nextNum = questionNum + 1;
+      setTimeout(() => {
+        if (maxQuestions > 0 && nextNum >= maxQuestions) {
+          // จบครบจำนวน → ส่ง damage ครั้งเดียว
+          const dmgResult       = saveFinalBossDamage(newHistory);
+          const finalBossHp     = dmgResult?.newBossHp ?? bossHpRef.current;
+          const finalBossDefeated = isBoss && finalBossHp <= 0;
+          onFinish({
+            history: newHistory, score: scoreRef.current,
+            lives: livesRef.current, livesMax: maxLives,
+            reason: finalBossDefeated ? "bossDefeated" : "complete",
+            student, challengeConfig,
+            bossHpFinal: finalBossHp,
+            bossDefeated: finalBossDefeated,
+            totalBossDmg: dmgResult?.totalDmg ?? 0,
+          });
         } else { loadNext(nextNum, livesRef.current, newHistory); }
-      },1200);
+      }, 1200);
     } else {
-      const newLives=livesRef.current-1; livesRef.current=newLives; setLives(newLives); setStreak(0);
-      setShakeHeart(true); setTimeout(()=>setShakeHeart(false),600); setPhase("reveal_wrong");
+      const newLives = livesRef.current - 1;
+      livesRef.current = newLives; setLives(newLives); setStreak(0);
+      setShakeHeart(true); setTimeout(() => setShakeHeart(false), 600);
+      setPhase("reveal_wrong");
     }
   }
 
   function handleNextAfterWrong() {
-    if(livesRef.current<=0){
-      onFinish({history:historyRef.current,score:scoreRef.current,lives:0,livesMax:maxLives,reason:"gameover",student,challengeConfig});
+    if (livesRef.current <= 0) {
+      // หมดชีวิต → ส่ง damage ครั้งเดียว
+      const dmgResult       = saveFinalBossDamage(historyRef.current);
+      const finalBossHp     = dmgResult?.newBossHp ?? bossHpRef.current;
+      const finalBossDefeated = isBoss && finalBossHp <= 0;
+      onFinish({
+        history: historyRef.current, score: scoreRef.current,
+        lives: 0, livesMax: maxLives,
+        reason: finalBossDefeated ? "bossDefeated" : "gameover",
+        student, challengeConfig,
+        bossHpFinal: finalBossHp,
+        bossDefeated: finalBossDefeated,
+        totalBossDmg: dmgResult?.totalDmg ?? 0,
+      });
     } else { loadNext(questionNum, livesRef.current, historyRef.current); }
   }
 
@@ -1064,13 +1467,49 @@ function ChallengeScreen({ challengeConfig, student, pool, onFinish, theme }) {
     <div style={{minHeight:"100vh",display:"flex",alignItems:"center",justifyContent:"center"}}><Spinner color={tc}/></div>
   );
 
-  const isReveal=phase==="reveal_correct"||phase==="reveal_wrong";
-  const isCorrectReveal=phase==="reveal_correct";
-  const progressPct=maxQuestions>0?(questionNum/maxQuestions)*100:0;
+  const isReveal        = phase === "reveal_correct" || phase === "reveal_wrong";
+  const isCorrectReveal = phase === "reveal_correct";
+  const progressPct     = maxQuestions > 0 ? (questionNum / maxQuestions) * 100 : 0;
 
   return (
     <div style={{minHeight:"100vh",display:"flex",flexDirection:"column",
       padding:"12px",maxWidth:"720px",margin:"0 auto",position:"relative",zIndex:1}}>
+
+      {/* Damage Flash (Boss mode) */}
+      {isBoss && dmgFlash && isReveal && isCorrectReveal && (
+        <DamageFlash damage={dmgFlash.damage} penetrated={dmgFlash.penetrated} />
+      )}
+
+      {/* Boss HP Bar */}
+      {isBoss && boss && (
+        <div style={{background:"rgba(12,4,4,.94)",border:"1px solid rgba(231,76,60,.4)",
+          borderRadius:"12px",padding:"10px 14px",marginBottom:"8px"}}>
+          {/* รูป Boss ใหญ่ */}
+          {boss.gifUrl && (
+            <div style={{textAlign:"center",marginBottom:"10px"}}>
+              <img src={boss.gifUrl} alt={boss.name}
+                style={{width:"100%",maxHeight:"432px",objectFit:"contain",
+                  filter:"drop-shadow(0 0 16px rgba(231,76,60,0.6))",
+                  borderRadius:"12px"}}
+                onError={(e: any) => e.currentTarget.style.display = "none"}/>
+            </div>
+          )}
+          <div style={{display:"flex",justifyContent:"space-between",alignItems:"center",marginBottom:"8px"}}>
+            <span style={{fontFamily:"'Cinzel Decorative',serif",color:"#e74c3c",fontSize:"16px",
+              textShadow:"0 0 12px rgba(231,76,60,0.4)"}}>
+              {boss.name}
+            </span>
+            <span style={{color:"#f5c6c6",fontSize:"13px",fontFamily:"'Cinzel',serif",fontWeight:600,
+              background:"rgba(231,76,60,0.15)",border:"1px solid rgba(231,76,60,0.3)",
+              padding:"4px 10px",borderRadius:"20px"}}>
+              🛡️ DEF {boss.def} · ตี &gt; {boss.def}
+            </span>
+          </div>
+          <HPBar current={bossHp} max={boss.hpMax} color="auto" height={12} showNumbers={true}/>
+        </div>
+      )}
+
+      {/* Header */}
       <div style={{background:"rgba(15,8,2,.94)",border:`1px solid ${ACCENT}44`,
         borderRadius:"12px",padding:"10px 14px",marginBottom:"12px"}}>
         <div style={{display:"flex",justifyContent:"space-between",alignItems:"center",marginBottom:"8px"}}>
@@ -1078,9 +1517,9 @@ function ChallengeScreen({ challengeConfig, student, pool, onFinish, theme }) {
             <div style={{display:"flex",alignItems:"center",gap:"6px"}}>
               {challengeConfig.logoImageUrl
                 ? <img src={challengeConfig.logoImageUrl} alt="logo"
-                    style={{width:"22px",height:"22px",borderRadius:"50%",objectFit:"cover"}}
-                    onError={e=>e.currentTarget.style.display="none"}/>
-                : <span style={{fontSize:"16px"}}>{challengeConfig.logoEmoji||"⚡"}</span>
+                    style={{width:"20px",height:"20px",borderRadius:"50%",objectFit:"cover"}}
+                    onError={(e: any) => e.currentTarget.style.display = "none"}/>
+                : <span style={{fontSize:"20px"}}>{challengeConfig.logoEmoji || challengeConfig.logoImageId || "⚡"}</span>
               }
               <span style={{color:ACCENT,fontFamily:"'Cinzel Decorative',serif",fontSize:"13px",fontWeight:700}}>
                 {challengeName||"Challenge Mode"}
@@ -1090,13 +1529,40 @@ function ChallengeScreen({ challengeConfig, student, pool, onFinish, theme }) {
               {student.nickname} · ข้อที่ {questionNum+1}{maxQuestions>0?` / ${maxQuestions}`:""}
             </div>
           </div>
-          <div style={{textAlign:"right"}}>
-            <div style={{color:tc,fontFamily:"'Cinzel',serif",fontSize:"22px",fontWeight:900}}>
-              {score}<span style={{fontSize:"12px",color:"#6b5a3e",marginLeft:"4px"}}>คะแนน</span>
+
+          {/* Timer (Boss) หรือ Score (Challenge ปกติ) */}
+          {isBoss && phase === "question" ? (
+            <TimerRing timeLeft={timeLeft} totalTime={timePerQ} />
+          ) : (
+            <div style={{textAlign:"right"}}>
+              <div style={{color:tc,fontFamily:"'Cinzel',serif",fontSize:"22px",fontWeight:900}}>
+                {score}<span style={{fontSize:"12px",color:"#6b5a3e",marginLeft:"4px"}}>คะแนน</span>
+              </div>
+              {streak>=3&&<div style={{fontSize:"11px",color:"#f39c12",fontFamily:"'Cinzel',serif"}}>🔥 ×{streak} ติดต่อกัน</div>}
             </div>
-            {streak>=3&&<div style={{fontSize:"11px",color:"#f39c12",fontFamily:"'Cinzel',serif"}}>🔥 ×{streak} ติดต่อกัน</div>}
-          </div>
+          )}
         </div>
+
+        {/* Boss player stats row */}
+        {isBoss && playerStats && (
+          <div style={{display:"flex",gap:"16px",marginBottom:"8px",
+            padding:"8px 12px",background:"rgba(212,175,55,.06)",
+            borderRadius:"8px",border:"1px solid rgba(212,175,55,.15)"}}>
+            {([["⚔️ ATK", playerStats.effective.atk],
+               ["🛡️ DEF", playerStats.effective.def],
+               ["⚡ SPD", playerStats.effective.spd]] as any[]).map(([icon, val]: any) => (
+              <div key={icon} style={{display:"flex",alignItems:"center",gap:"4px"}}>
+                <span style={{color:"#c0a878",fontSize:"13px",fontFamily:"'Cinzel',serif"}}>{icon}</span>
+                <span style={{color:"#f5e6c8",fontSize:"16px",fontWeight:700,fontFamily:"'Cinzel',serif"}}>{val}</span>
+              </div>
+            ))}
+            <span style={{marginLeft:"auto",color:tc,fontSize:"14px",fontFamily:"'Cinzel',serif",fontWeight:700}}>
+              {score} คะแนน
+              {streak >= 3 && <span style={{color:"#f39c12",marginLeft:"6px"}}>🔥×{streak}</span>}
+            </span>
+          </div>
+        )}
+
         <div style={{display:"flex",alignItems:"center",gap:"10px",
           animation:shakeHeart?"heartshake 0.5s ease":"none"}}>
           <LifeHearts total={maxLives} remaining={lives}/>
@@ -1195,7 +1661,7 @@ function ChallengeScreen({ challengeConfig, student, pool, onFinish, theme }) {
       </div>
 
       {!isReveal?(
-        <button onClick={submitAnswer}
+        <button onClick={()=>submitAnswer(false)}
           disabled={current.questionType!=="text"?selected===null:textVal.trim()===""}
           style={{width:"100%",padding:"14px",border:"none",borderRadius:"12px",
             background:(current.questionType!=="text"?selected!==null:textVal.trim()!=="")
@@ -1205,7 +1671,7 @@ function ChallengeScreen({ challengeConfig, student, pool, onFinish, theme }) {
             cursor:(current.questionType!=="text"?selected!==null:textVal.trim()!=="")?"pointer":"not-allowed",
             boxShadow:(current.questionType!=="text"?selected!==null:textVal.trim()!=="")
               ?`0 4px 20px ${tc}33`:"none"}}>
-          ยืนยันคำตอบ
+          {isBoss ? "⚔️ โจมตี" : "ยืนยันคำตอบ"}
         </button>
       ):isCorrectReveal?(
         <div style={{width:"100%",padding:"14px",borderRadius:"12px",background:"rgba(39,174,96,.08)",
@@ -1228,14 +1694,19 @@ function ChallengeScreen({ challengeConfig, student, pool, onFinish, theme }) {
 }
 
 function ChallengeResultScreen({ data, onRetry, onHome, theme }) {
-  const { history, score, lives, livesMax, reason, student, challengeConfig } = data;
+  const { history, score, lives, livesMax, reason, student, challengeConfig,
+          bossHpFinal, bossDefeated } = data;
   const tc = theme.themeColor;
-  const isComplete = reason === "complete";
+  const isComplete  = reason === "complete" || reason === "bossDefeated";
+  const isBossMode  = !!data.bossHpFinal !== undefined && !!challengeConfig?.bossName;
   const correctCount = history.filter(h=>h.isCorrect).length;
   const totalQ = history.length;
   const maxScore = history.reduce((s,h)=>s+(h.question.points??1),0);
   let bestStreak=0, cur=0;
   history.forEach(h=>{ if(h.isCorrect){cur++;bestStreak=Math.max(bestStreak,cur);}else cur=0; });
+
+  // ── Boss damage summary ──────────────────────────────────
+  const totalDmg = data.totalBossDmg ?? 0;
   const [showDetail,setShowDetail]=useState(false);
   const [saving,setSaving]=useState(true);
   const [saveErr,setSaveErr]=useState(false);
@@ -1309,17 +1780,63 @@ function ChallengeResultScreen({ data, onRetry, onHome, theme }) {
           </div>
         </div>
 
-        <div style={{display:"grid",gridTemplateColumns:"1fr 1fr",gap:"8px",marginBottom:"16px"}}>
+        <div style={{display:"grid",gridTemplateColumns:"1fr 1fr",gap:"10px",marginBottom:"16px"}}>
           {[["✓ ถูก",`${correctCount} ข้อ`,"#27ae60"],["★ คะแนน",`${score}`,tc],
-            ["🔥 Streak",`${bestStreak} ข้อ`,"#f39c12"],["❤️ ชีวิตเหลือ",`${lives}/${livesMax}`,lives>0?"#27ae60":"#6b5a3e"]
-          ].map(([k,v,c])=>(
-            <div key={k} style={{background:"rgba(255,255,255,.02)",border:"1px solid rgba(212,175,55,.12)",
-              borderRadius:"10px",padding:"12px",textAlign:"center"}}>
-              <div style={{color:"#6b5a3e",fontSize:"11px",fontFamily:"'Cinzel',serif",marginBottom:"4px"}}>{k}</div>
-              <div style={{color:c,fontSize:"20px",fontWeight:700,fontFamily:"'Cinzel',serif"}}>{v}</div>
+            ["🔥 Streak",`${bestStreak} ข้อ`,"#f39c12"],["❤️ ชีวิตเหลือ",`${lives}/${livesMax}`,lives>0?"#27ae60":"#e74c3c"]
+          ].map(([k,v,c]: any)=>(
+            <div key={k} style={{background:"rgba(255,255,255,.04)",border:"1px solid rgba(212,175,55,.2)",
+              borderRadius:"12px",padding:"14px",textAlign:"center"}}>
+              <div style={{color:"#c0a878",fontSize:"13px",fontFamily:"'Cinzel',serif",marginBottom:"6px"}}>{k}</div>
+              <div style={{color:c,fontSize:"24px",fontWeight:700,fontFamily:"'Cinzel',serif"}}>{v}</div>
             </div>
           ))}
         </div>
+
+        {/* ── Boss Damage Summary (แสดงเฉพาะ Boss mode) ── */}
+        {totalDmg > 0 && (
+          <div style={{
+            background:"linear-gradient(135deg,rgba(139,0,0,.15),rgba(180,0,0,.08))",
+            border:"1px solid rgba(231,76,60,.4)",
+            borderRadius:"12px",padding:"16px",marginBottom:"16px",
+          }}>
+            <div style={{color:"#e74c3c",fontFamily:"'Cinzel Decorative',serif",fontSize:"13px",
+              fontWeight:700,marginBottom:"12px",display:"flex",alignItems:"center",gap:"8px"}}>
+              ⚔️ สรุปการโจมตีบอส
+              {bossDefeated && (
+                <span style={{background:"rgba(231,76,60,.2)",border:"1px solid rgba(231,76,60,.5)",
+                  borderRadius:"20px",padding:"2px 10px",fontSize:"11px",color:"#ff6b35"}}>
+                  💀 บอสพ่ายแพ้!
+                </span>
+              )}
+            </div>
+            <div style={{display:"grid",gridTemplateColumns:"1fr 1fr",gap:"8px"}}>
+              {[
+                ["⚔️ Damage รวม", totalDmg.toLocaleString(), "#e74c3c"],
+                ["✓ ข้อถูก", `${correctCount} ข้อ`, "#27ae60"],
+              ].map(([k,v,c]: any) => (
+                <div key={k} style={{background:"rgba(231,76,60,.06)",border:"1px solid rgba(231,76,60,.2)",
+                  borderRadius:"10px",padding:"12px",textAlign:"center"}}>
+                  <div style={{color:"#8b5555",fontSize:"11px",fontFamily:"'Cinzel',serif",marginBottom:"4px"}}>{k}</div>
+                  <div style={{color:c,fontSize:"20px",fontWeight:700,fontFamily:"'Cinzel',serif"}}>{v}</div>
+                </div>
+              ))}
+            </div>
+            <div style={{marginTop:"10px",padding:"10px",background:"rgba(231,76,60,.06)",
+              borderRadius:"8px",textAlign:"center"}}>
+              <span style={{color:"#8b5555",fontSize:"12px",fontFamily:"'Cinzel',serif"}}>
+                สูตร: {correctCount} ข้อถูก + ATK = {totalDmg} damage
+              </span>
+            </div>
+            {bossHpFinal !== undefined && !bossDefeated && (
+              <div style={{marginTop:"8px",color:"#6b3030",fontSize:"12px",
+                fontFamily:"'Cinzel',serif",textAlign:"center"}}>
+                HP บอสที่เหลือ: <span style={{color:"#e74c3c",fontWeight:700}}>
+                  {Number(bossHpFinal).toLocaleString()}
+                </span>
+              </div>
+            )}
+          </div>
+        )}
 
         <div style={{marginBottom:"12px"}}>
           <button type="button" onClick={()=>setShowDetail(d=>!d)} style={{
@@ -1367,7 +1884,7 @@ function ChallengeResultScreen({ data, onRetry, onHome, theme }) {
   );
 }
 
-export default function App() {
+function WihokWiphanApp() {
   const [screen,setScreen]=useState("init");
   const [quizSets, setQuizSets] = useState([]); 
   const [selectedSet,setSet]=useState(null);
@@ -1375,74 +1892,104 @@ export default function App() {
   const [questions,setQuestions]=useState([]);
   const [resultData,setResult]=useState(null);
   const [loadError,setLoadError]=useState("");
+  const [retryTrigger, setRetryTrigger] = useState(0); // ⚡ กดแล้ว trigger โหลดใหม่โดยไม่ออกจากหน้า
+  const [loadingTooLong, setLoadingTooLong] = useState(false); // แสดงปุ่มลองใหม่ถ้าโหลดนานผิดปกติ
+  // ⚔️ Challenge mode: โหลดข้อสอบ "ต้องสำเร็จเสมอ" — ไม่มีหน้า error ที่ตัน
+  // ต้องกดเอง มีแต่สถานะ "กำลังลองใหม่ครั้งที่ N" ที่วนอัตโนมัติไปเรื่อยๆ
+  const [challengeAttempt, setChallengeAttempt] = useState(0);
   const [theme,setTheme]=useState(DEFAULT_THEME);
   const [mode]=useState(()=>getModeFromUrl());
   const [challengeConfig,setChallengeConfig]=useState(null);
   const [challengePool,setChallengePool]=useState([]);
   const [challengeResult,setChallengeResult]=useState(null);
   const [cachedConfig, setCachedConfig] = useState(null);
+  const [activeBoss,   setActiveBoss]   = useState<any>(null);   // Boss Mode
+  const [playerStats,  setPlayerStats]  = useState<any>(null);   // Boss Mode
   const prefetchedQuestionsRef = useRef<any>(null);
+  const challengeBundleRef     = useRef<any>(null); // ⚡ prefetch bundle (config+boss+questions)
+  const playerStatsPrefetchRef = useRef<any>(null); // ⚡ prefetch playerStats หลังรู้ studentId
   const isDirectLink=!!getSetFromUrl();
-  const isChallenge=mode==="challenge";
+  const isChallenge = mode === "challenge";
+  // ── useMemo สำหรับค่าที่คำนวณซ้ำ ──────────────────────────
+  const setFromUrl = React.useMemo(() => getSetFromUrl(), []);
 
-useEffect(() => {
-    apiGet({ action: "getQuizSets" })
-      .then(data => {
-        if (data.sets && data.sets.length > 0) {
-          setQuizSets(data.sets);
-        }
-      })
-      .catch(() => {});
-  }, []);
-  
-useEffect(()=>{
-    const setId=getSetFromUrl();
-    if(setId){
-      apiGet({action:"getConfig",setId}).then(d=>{ 
-        if(d.config) {
-          setTheme(buildTheme(d.config)); 
-          setCachedConfig(d.config); 
-        } 
-      });
-      const pseudoSet={ id:setId, name:setId, total:0, passingScore:0, timeLimit:0 };
-      if(isChallenge){
-        setSet(pseudoSet); setScreen("login");
-      } else {
-        apiGet({ action: "getQuizSets" }).then(res => {
-          const sets = res.sets || [];
+  // ── โหลด QuizSets + Config + Set พร้อมกันใน 1 useEffect ──
+  // แสดงหน้า setSelect ทันทีก่อน แล้วโหลด data ทีหลัง
+  useEffect(() => {
+    const setId = setFromUrl;
+
+    // ⚡ Boss/Challenge Mode: เริ่ม prefetch bundle ทันทีที่รู้ setId
+    // ไม่ต้องรอ student กรอกรหัสเลย เพราะ config/boss/questions ไม่ต้องใช้ studentId
+    if (setId && isChallenge) {
+      challengeBundleRef.current = apiGet({ action: "getChallengeBundle", setId })
+        .catch(() => null);
+    }
+
+    if (setId) {
+      Promise.all([
+        apiGet({ action: "getConfig", setId }),
+        isChallenge ? Promise.resolve({ sets: [] }) : apiGet({ action: "getQuizSets" }),
+      ]).then(([cfgData, setsData]) => {
+        if (cfgData.config) { setTheme(buildTheme(cfgData.config)); setCachedConfig(cfgData.config); }
+        if (setsData.sets?.length) setQuizSets(setsData.sets);
+        if (isChallenge) {
+          setSet({ id: setId, name: setId, total: 0, passingScore: 0, timeLimit: 0 });
+          setScreen("login");
+        } else {
+          const sets = setsData.sets || [];
           const found = sets.find((s: any) => s.id === setId);
-          if(found){ 
-            setSet(found); 
-            setScreen("login"); 
-          } else {
-            setScreen("setSelect");
-          }
-        }).catch(() => setScreen("setSelect"));
-      }
-    } else setScreen("setSelect");
-  },[]);
+          if (found) { setSet(found); setScreen("login"); }
+          else setScreen("setSelect");
+        }
+      }).catch(() => setScreen("setSelect"));
+    } else {
+      // ✅ แสดงหน้า setSelect ทันที ไม่รอ API
+      setScreen("setSelect");
+      // โหลด quizSets ใน background
+      apiGet({ action: "getQuizSets" })
+        .then((data: any) => { if (data.sets?.length) setQuizSets(data.sets); })
+        .catch(() => {});
+    }
+  }, []);
  // ── 1) โหลดข้อสอบโหมดปกติ (รองรับ Prefetch) ──────────────────
   useEffect(() => {
     if (screen !== "loading" || !selectedSet || !student || isChallenge) return;
     setLoadError("");
+    setLoadingTooLong(false);
+
+    // ⏱️ ถ้าโหลดนานเกิน 20 วินาที แสดงปุ่ม "ลองใหม่" ให้กดเองได้
+    // (retry อัตโนมัติเบื้องหลังยังทำงานต่อ อันนี้แค่เพิ่มทางออกให้ผู้ใช้)
+    const stuckTimer = setTimeout(() => setLoadingTooLong(true), 20000);
+
     const run = async () => {
       try {
-        // ✅ ถ้า prefetch เสร็จแล้ว ใช้เลย ไม่ต้อง fetch ใหม่
-        const cached = prefetchedQuestionsRef.current;
-        const [qData, cfgData] = cached
-          ? cached
-          : await Promise.all([
-              apiGet({ action: "getQuestions", setName: selectedSet.id }),
-              cachedConfig
-                ? Promise.resolve({ config: cachedConfig })
-                : apiGet({ action: "getConfig", setId: selectedSet.id }),
-            ]);
-        
+        // ✅ ถ้า prefetch เสร็จแล้ว ใช้เลย ไม่ต้อง fetch ใหม่ (เฉพาะรอบแรกเท่านั้น
+        // ถ้าเป็นการกดลองใหม่ retryTrigger>0 จะไม่ใช้ของเก่าที่อาจพังอยู่)
+        const cached = retryTrigger === 0 ? prefetchedQuestionsRef.current : null;
+        let qData, cfgData;
+
+        if (cached) {
+          [qData, cfgData] = cached;
+        } else {
+          [qData, cfgData] = await Promise.all([
+            apiGet({ action: "getQuestions", setName: selectedSet.id }),
+            cachedConfig && retryTrigger === 0
+              ? Promise.resolve({ config: cachedConfig })
+              : apiGet({ action: "getConfig", setId: selectedSet.id }),
+          ]);
+        }
+
         prefetchedQuestionsRef.current = null; // ล้าง cache หลังนำไปใช้แล้ว
 
+        // 🔁 ถ้าได้ข้อสอบว่างเปล่า อาจเป็นแค่ความผิดพลาดชั่วคราว (เช่น
+        // cache คืนค่าไม่ครบ) ลองอีกรอบก่อนสรุปว่า "ไม่มีข้อสอบจริงๆ"
         if (!qData.questions?.length) {
-          setLoadError("ไม่พบข้อสอบในชุด " + selectedSet.id);
-          return;
+          const retryQData = await apiGet({ action: "getQuestions", setName: selectedSet.id });
+          if (!retryQData.questions?.length) {
+            setLoadError("ไม่พบข้อสอบในชุด " + selectedSet.id);
+            return;
+          }
+          qData = retryQData;
         }
 
         const shouldShuffle = cfgData.config?.shuffleQuestions !== false;
@@ -1458,40 +2005,95 @@ useEffect(()=>{
       }
     };
     run();
-  }, [screen, cachedConfig]);
 
-  // ── 2) โหลดข้อสอบโหมด Challenge (คงเดิม) ──────────────────
+    return () => clearTimeout(stuckTimer);
+  }, [screen, cachedConfig, retryTrigger]);
+
+  // ── 2) โหลดข้อสอบโหมด Challenge + Boss (รวม 1 call) ────
+  // 🛡️ นโยบาย: "ต้องเข้าถึงโจทย์ได้เสมอ ช้าได้แต่ห้ามค้าง/ห้ามตัน"
+  // ต่างจากโหมดปกติตรงที่ตรงนี้ "ไม่มี" หน้า error ที่ต้องให้นักเรียนกดเอง —
+  // ถ้าพัง (network, timeout, ข้อมูลว่าง ฯลฯ) จะวน retry อัตโนมัติต่อไปเรื่อยๆ
+  // แบบ exponential backoff (เพดาน 15 วิ/ครั้ง) จนกว่าจะสำเร็จ พร้อมโชว์
+  // เลขจำนวนครั้งที่พยายามอยู่ ไม่ใช่ค้างเฉยๆแบบไม่รู้ว่ายังทำงานอยู่ไหม
+  // playerStats แยกอิสระจาก bundle: ถ้า stats พังไม่บล็อกการเข้าเกม เพราะ
+  // ChallengeScreen รองรับ playerStats=null (ใช้ค่า default) อยู่แล้ว
   useEffect(() => {
     if (screen !== "loading" || !selectedSet || !student || !isChallenge) return;
+    let cancelled = false;
     setLoadError("");
-    const setId = selectedSet.id;
-    apiGet({ action: "getChallengeConfig", setId }).then(async cfgData => {
-      const cc = cfgData.challengeConfig;
-      if (!cc) { setLoadError("ไม่พบ Challenge Config สำหรับ " + setId); return; }
-      setChallengeConfig(cc);
-      const setIds = cc.challengeSets || [];
-      const allQ = await Promise.all(
-        setIds.map(sid => apiGet({ action: "getQuestions", setName: sid }).then(d => d.questions || []))
-      );
-      const pool = shuffle(allQ.flat());
-      if (!pool.length) { setLoadError("ไม่พบข้อสอบในชุด Challenge"); return; }
-      setChallengePool(pool);
-      setScreen("challenge");
-    }).catch(() => setLoadError("โหลด Challenge ไม่ได้ กรุณาตรวจสอบการเชื่อมต่อ"));
-  }, [screen]);
-  
-  const goHome=()=>{
-  setResult(null); setQuestions([]);
-  setChallengeResult(null); setChallengePool([]);
-  setCachedConfig(null); // 👈 เพิ่มบรรทัดนี้เพื่อล้าง cache ชุดเดิม
-  if(isDirectLink){ setStudent(null); setScreen("login"); }
-  else { setSet(null); setStudent(null); setScreen("setSelect"); }
-};
-  const goRetry=()=>{
+    setLoadingTooLong(false);
+    setChallengeAttempt(0);
+    // เผื่อ "รอบแรกสุด" เพียงรอบเดียวก็นานผิดปกติอยู่แล้ว (เช่น internal
+    // retry ของ fetchJsonWithRetry เอง) — โชว์สถานะให้อุ่นใจไว้ก่อนแม้ยัง
+    // ไม่นับเป็นรอบที่ "พลาด" อย่างเป็นทางการ
+    const reassureTimer = setTimeout(() => setLoadingTooLong(true), 8000);
+
+    (async () => {
+      let attempt = 0;
+      while (!cancelled) {
+        try {
+          // ⚡ ใช้ค่าที่ prefetch ไว้แล้วถ้ามี (เฉพาะพยายามครั้งแรกสุดของทั้งหน้า)
+          const bundlePromise = (attempt === 0 && retryTrigger === 0 && challengeBundleRef.current)
+            ? challengeBundleRef.current
+            : apiGet({ action: "getChallengeBundle", setId: selectedSet.id });
+          const statsPromise = (attempt === 0 && retryTrigger === 0 && playerStatsPrefetchRef.current)
+            ? playerStatsPrefetchRef.current
+            : apiGet({ action: "getPlayerStats", studentId: student.id });
+
+          // stats ห้ามทำให้ทั้งก้อนพัง — พังแล้วใช้ null แทน (ChallengeScreen รองรับอยู่แล้ว)
+          const [data, statsData] = await Promise.all([
+            bundlePromise,
+            statsPromise.catch(() => null),
+          ]);
+
+          if (cancelled) return;
+          challengeBundleRef.current     = null; // ล้าง cache หลังใช้ (ไม่ว่าสำเร็จหรือพัง จะ fetch ใหม่รอบถัดไป)
+          playerStatsPrefetchRef.current = null;
+
+          if (data?.error) throw new Error(data.error);
+          const pool = shuffle(data?.questions || []);
+          if (!pool.length) throw new Error("EMPTY_POOL");
+
+          // ✅ สำเร็จ — เข้าเกมได้
+          setChallengeConfig(data.challengeConfig);
+          setActiveBoss(data.boss || null);
+          setPlayerStats(statsData?.stats || data.playerStats || null);
+          setChallengePool(pool);
+          setScreen("challenge");
+          return;
+        } catch (err) {
+          if (cancelled) return;
+          attempt++;
+          setChallengeAttempt(attempt);
+          setLoadingTooLong(true); // โชว์กล่องสถานะ "กำลังลองใหม่" ตั้งแต่ครั้งแรกที่พลาด
+          // exponential backoff มี jitter กันหลายเครื่องยิงพร้อมกันเป๊ะ เพดาน 15 วิ
+          const delay = Math.min(15000, 1200 * Math.pow(1.6, Math.min(attempt, 8))) + Math.random() * 500;
+          await sleep(delay);
+          // ไม่ return / ไม่ throw ต่อ — วนลูปลองใหม่ไปเรื่อยๆ จนกว่าจะสำเร็จ
+          // หรือจนกว่า effect นี้จะถูกยกเลิก (ออกจากหน้า / unmount)
+        }
+      }
+    })();
+
+    return () => { cancelled = true; clearTimeout(reassureTimer); };
+  }, [screen, retryTrigger]);
+
+  const goHome = useCallback(() => {
+    setResult(null); setQuestions([]);
+    setChallengeResult(null); setChallengePool([]);
+    setCachedConfig(null);
+    setActiveBoss(null); setPlayerStats(null);
+    setRetryTrigger(0); setLoadingTooLong(false);
+    if(isDirectLink){ setStudent(null); setScreen("login"); }
+    else { setSet(null); setStudent(null); setScreen("setSelect"); }
+  }, [isDirectLink]);
+
+  const goRetry = useCallback(() => {
     setQuestions([]); setResult(null);
     setChallengeResult(null); setChallengePool([]);
+    setRetryTrigger(0); setLoadingTooLong(false);
     setScreen("loading");
-  };
+  }, []);
 
   const tc=theme.themeColor;
   const bg=theme.bgImageUrl
@@ -1509,6 +2111,8 @@ useEffect(()=>{
         @keyframes pfloat{0%,100%{transform:translateY(0)scale(1);opacity:.3}50%{transform:translateY(-18px)scale(1.2);opacity:.65}}
         @keyframes pspin{to{transform:rotate(360deg)}}
         @keyframes heartshake{0%,100%{transform:translateX(0)}20%{transform:translateX(-6px)}40%{transform:translateX(6px)}60%{transform:translateX(-4px)}80%{transform:translateX(4px)}}
+        @keyframes dmgFloat{0%{transform:translateX(-50%) translateY(0);opacity:1}100%{transform:translateX(-50%) translateY(-60px);opacity:0}}
+        @keyframes skeletonPulse{0%,100%{opacity:.4}50%{opacity:.8}}
         input:focus{border-color:${tc}99!important;box-shadow:0 0 0 2px ${tc}22;}
         button:hover:not(:disabled){filter:brightness(1.1);transform:translateY(-1px);}
         button{transition:all .18s;}
@@ -1544,26 +2148,74 @@ useEffect(()=>{
     challengeLabel={challengeConfig?.challengeName}
     cachedConfig={cachedConfig}
     prefetchedQuestionsRef={prefetchedQuestionsRef}
+    playerStatsPrefetchRef={playerStatsPrefetchRef}
     apiGet={apiGet}
     onConfirm={st=>{ setStudent(st); setScreen("loading"); }}
     onBack={()=>{ setSet(null); setScreen("setSelect"); }}
   />
 )}
         {screen==="loading"&&(
-          loadError
+          isChallenge
+            // ⚔️ Challenge mode: ไม่มีหน้า error ที่ตัน — วน retry อัตโนมัติ
+            // อยู่เบื้องหลังเสมอ (ดู useEffect #2 ด้านบน) แค่โชว์สถานะ +
+            // ทางออกที่ "ไม่บังคับ" ให้กดเท่านั้น ไม่ใช่ทางเดียวที่จะไปต่อได้
+            ?<div style={{minHeight:"100vh",display:"flex",flexDirection:"column",alignItems:"center",justifyContent:"center",padding:"20px"}}>
+                <Spinner color={tc}/>
+                {loadingTooLong&&(
+                  <div style={{maxWidth:"340px",width:"100%",textAlign:"center",marginTop:"16px"}}>
+                    <p style={{color:"#8b7355",fontFamily:"'Sarabun',sans-serif",fontSize:"13px",marginBottom:"10px"}}>
+                      {challengeAttempt>0
+                        ? `กำลังลองใหม่ครั้งที่ ${challengeAttempt} เครือข่ายอาจช้าอยู่ แต่ระบบจะพยายามต่อไปจนกว่าจะสำเร็จ ไม่ต้องกดอะไรเพิ่ม`
+                        : "กำลังโหลดนานกว่าปกติ เครือข่ายอาจช้าอยู่ กำลังพยายามต่อไป"}
+                    </p>
+                    {challengeAttempt>=5&&(
+                      <p style={{color:"#e67e22",fontFamily:"'Sarabun',sans-serif",fontSize:"12px",marginBottom:"12px"}}>
+                        ถ้านานผิดปกติมาก อาจเป็นเพราะยังไม่มีข้อสอบตั้งค่าไว้ในชุดนี้ ลองแจ้งครูให้ตรวจสอบดู
+                        (ระบบจะยังคงลองใหม่ให้ต่อไปเรื่อยๆ ไม่ต้องทำอะไร)
+                      </p>
+                    )}
+                    <div style={{display:"flex",gap:"8px"}}>
+                      <button onClick={goHome} style={{flex:1,padding:"10px",background:`${tc}11`,
+                        border:`1px solid ${tc}44`,borderRadius:"10px",color:tc,
+                        fontFamily:"'Cinzel',serif",fontSize:"13px",cursor:"pointer"}}>กลับหน้าหลัก</button>
+                      <button onClick={()=>setRetryTrigger(t=>t+1)} style={{flex:1,padding:"10px",
+                        background:`${tc}11`,border:`1px solid ${tc}44`,borderRadius:"10px",color:tc,
+                        fontFamily:"'Cinzel',serif",fontSize:"13px",cursor:"pointer"}}>🔄 ลองตอนนี้เลย</button>
+                    </div>
+                  </div>
+                )}
+              </div>
+            // โหมดปกติ: พฤติกรรมเดิมทุกประการ (มีหน้า error ให้กดลองใหม่เอง)
+            : loadError
             ?<div style={{minHeight:"100vh",display:"flex",alignItems:"center",justifyContent:"center",padding:"20px"}}>
                 <div style={{maxWidth:"400px",width:"100%",
                   background:"linear-gradient(160deg,rgba(20,12,5,.97),rgba(38,22,8,.97))",
                   border:`2px solid ${tc}55`,borderRadius:"16px",padding:"32px",
                   boxShadow:"0 20px 60px rgba(0,0,0,.8)",textAlign:"center",position:"relative",zIndex:1}}>
                   <p style={{color:"#e74c3c",fontFamily:"'Sarabun',sans-serif",marginBottom:"20px"}}>⚠ {loadError}</p>
-                  <button onClick={goHome} style={{width:"100%",padding:"12px",background:`${tc}11`,
-                    border:`1px solid ${tc}44`,borderRadius:"10px",color:tc,
-                    fontFamily:"'Cinzel',serif",fontSize:"14px",cursor:"pointer"}}>กลับหน้าหลัก</button>
+                  <div style={{display:"flex",gap:"8px"}}>
+                    <button onClick={goHome} style={{flex:1,padding:"12px",background:`${tc}11`,
+                      border:`1px solid ${tc}44`,borderRadius:"10px",color:tc,
+                      fontFamily:"'Cinzel',serif",fontSize:"14px",cursor:"pointer"}}>กลับหน้าหลัก</button>
+                    <button onClick={()=>{ setLoadError(""); setRetryTrigger(t=>t+1); }} style={{flex:2,padding:"12px",
+                      background:`linear-gradient(135deg,#6b4f10,${tc},#6b4f10)`,border:"none",
+                      borderRadius:"10px",color:"#1a0e00",fontFamily:"'Cinzel',serif",
+                      fontSize:"14px",fontWeight:700,cursor:"pointer"}}>🔄 ลองใหม่</button>
+                  </div>
                 </div>
               </div>
-            :<div style={{minHeight:"100vh",display:"flex",alignItems:"center",justifyContent:"center"}}>
+            :<div style={{minHeight:"100vh",display:"flex",flexDirection:"column",alignItems:"center",justifyContent:"center",padding:"20px"}}>
                 <Spinner color={tc}/>
+                {loadingTooLong&&(
+                  <div style={{maxWidth:"320px",width:"100%",textAlign:"center",marginTop:"16px"}}>
+                    <p style={{color:"#8b7355",fontFamily:"'Sarabun',sans-serif",fontSize:"13px",marginBottom:"12px"}}>
+                      กำลังโหลดนานกว่าปกติ เครือข่ายอาจช้าอยู่ ระบบกำลังลองใหม่ให้อัตโนมัติ
+                    </p>
+                    <button onClick={()=>{ setLoadError(""); setRetryTrigger(t=>t+1); }} style={{width:"100%",padding:"10px",
+                      background:`${tc}11`,border:`1px solid ${tc}44`,borderRadius:"10px",color:tc,
+                      fontFamily:"'Cinzel',serif",fontSize:"13px",cursor:"pointer"}}>🔄 ลองโหลดใหม่ตอนนี้เลย</button>
+                  </div>
+                )}
               </div>
         )}
         {screen==="quiz"&&selectedSet&&student&&questions.length>0&&(
@@ -1578,12 +2230,80 @@ useEffect(()=>{
           <ChallengeScreen key={Date.now()}
             challengeConfig={challengeConfig} student={student} pool={challengePool}
             onFinish={d=>{ setChallengeResult(d); setScreen("challenge-result"); }}
-            theme={theme}/>
+            theme={theme}
+            boss={activeBoss}
+            playerStats={playerStats}
+          />
         )}
         {screen==="challenge-result"&&challengeResult&&(
           <ChallengeResultScreen data={challengeResult} onRetry={goRetry} onHome={goHome} theme={theme}/>
         )}
       </div>
     </>
+  );
+}
+
+// ============================================================
+// ERROR BOUNDARY — กันไม่ให้ error ที่ไม่คาดคิดทำให้จอขาวค้าง
+// ============================================================
+// ปกติถ้า React component พัง (throw ระหว่าง render) จะทำให้
+// ทั้งหน้าจอกลายเป็นสีขาวเปล่าไม่มีอะไรเลย ไม่มีทางกู้คืน
+// ตัวนี้ดักไว้ แสดงปุ่ม "โหลดหน้าใหม่" แทน เพื่อให้นักเรียนยังมี
+// ทางออกเสมอ ไม่ใช่จอค้างแบบไม่รู้ต้องทำอะไร
+class AppErrorBoundary extends React.Component<
+  { children: React.ReactNode },
+  { hasError: boolean }
+> {
+  constructor(props: { children: React.ReactNode }) {
+    super(props);
+    this.state = { hasError: false };
+  }
+  static getDerivedStateFromError() {
+    return { hasError: true };
+  }
+  componentDidCatch(error: any, info: any) {
+    console.error("App crashed:", error, info);
+  }
+  render() {
+    if (this.state.hasError) {
+      return (
+        <div style={{
+          minHeight: "100vh", display: "flex", alignItems: "center", justifyContent: "center",
+          padding: "20px", fontFamily: "'Sarabun',sans-serif", background: "#0d0803",
+        }}>
+          <div style={{
+            maxWidth: "380px", width: "100%", textAlign: "center",
+            background: "linear-gradient(160deg,rgba(20,12,5,.97),rgba(38,22,8,.97))",
+            border: "2px solid rgba(231,76,60,.4)", borderRadius: "16px", padding: "32px 24px",
+            boxShadow: "0 20px 60px rgba(0,0,0,.8)",
+          }}>
+            <div style={{ fontSize: "40px", marginBottom: "12px" }}>⚠️</div>
+            <p style={{ color: "#e74c3c", fontSize: "15px", marginBottom: "18px" }}>
+              เกิดข้อผิดพลาดที่ไม่คาดคิด
+            </p>
+            <button
+              onClick={() => window.location.reload()}
+              style={{
+                width: "100%", padding: "13px", borderRadius: "10px", border: "none",
+                background: "linear-gradient(135deg,#6b4f10,#d4af37,#6b4f10)",
+                color: "#1a0e00", fontFamily: "'Cinzel',serif", fontSize: "14px",
+                fontWeight: 700, cursor: "pointer",
+              }}
+            >
+              🔄 โหลดหน้าใหม่
+            </button>
+          </div>
+        </div>
+      );
+    }
+    return this.props.children;
+  }
+}
+
+export default function App() {
+  return (
+    <AppErrorBoundary>
+      <WihokWiphanApp />
+    </AppErrorBoundary>
   );
 }
